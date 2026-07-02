@@ -96,6 +96,7 @@ venv/bin/python -c "import bot; from app.config import load_config; cfg = load_c
 6. Подключить router в `app/handlers/__init__.py`.
 
 Для ингредиентов использовать `app/services/ingredients.py`: этот парсер нужен не только рецептам, но и будущему списку покупок.
+Для расчёта недель и будущего списка покупок использовать `app/services/menus.py`, где уже есть агрегация ингредиентов меню.
 
 ## Git
 

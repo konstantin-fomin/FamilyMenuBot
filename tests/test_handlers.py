@@ -74,6 +74,7 @@ def test_all_routers_are_registered():
         "start",
         "family",
         "recipes",
+        "weekly_menu",
         "menu",
     ]
 

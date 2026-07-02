@@ -66,6 +66,23 @@ class RecipeSummary:
     created_at: str
 
 
+@dataclass(frozen=True)
+class Menu:
+    id: int
+    week_start: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class MenuItem:
+    id: int
+    menu_id: int
+    recipe_id: int | None
+    recipe_name: str
+    day: int | None
+    count: int
+
+
 DEFAULT_CATEGORIES = (
     "🍲 Супы",
     "🍖 Основные блюда",
@@ -152,6 +169,34 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe_id
                 ON recipe_ingredients (recipe_id);
+
+            CREATE TABLE IF NOT EXISTS menus (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                week_start TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                menu_id INTEGER NOT NULL,
+                recipe_id INTEGER,
+                recipe_name TEXT NOT NULL,
+                day INTEGER CHECK (day IS NULL OR day BETWEEN 1 AND 7),
+                count INTEGER NOT NULL DEFAULT 1 CHECK (count > 0),
+                FOREIGN KEY (menu_id) REFERENCES menus(id) ON DELETE CASCADE,
+                FOREIGN KEY (recipe_id) REFERENCES recipes(id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_menu_items_menu_id
+                ON menu_items (menu_id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_unique_recipe_day
+                ON menu_items (menu_id, recipe_id, day)
+                WHERE recipe_id IS NOT NULL AND day IS NOT NULL;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_unique_recipe_no_day
+                ON menu_items (menu_id, recipe_id)
+                WHERE recipe_id IS NOT NULL AND day IS NULL;
             """
         )
         self._seed_categories()
@@ -439,6 +484,142 @@ class Database:
         self._db.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
         self._db.commit()
 
+    async def get_or_create_menu(self, week_start: str) -> Menu:
+        self._db.execute(
+            "INSERT OR IGNORE INTO menus (week_start) VALUES (?)",
+            (week_start,),
+        )
+        self._db.commit()
+        menu = await self.get_menu_by_week_start(week_start)
+        if menu is None:
+            raise RuntimeError("Не удалось создать меню недели")
+        return menu
+
+    async def get_menu_by_week_start(self, week_start: str) -> Menu | None:
+        row = self._fetchone(
+            "SELECT id, week_start, created_at FROM menus WHERE week_start = ?",
+            (week_start,),
+        )
+        return _menu_from_row(row) if row else None
+
+    async def add_menu_item(
+        self,
+        menu_id: int,
+        recipe_id: int,
+        day: int | None,
+        count: int = 1,
+    ) -> MenuItem:
+        recipe = await self.get_recipe(recipe_id)
+        if recipe is None:
+            raise ValueError("Рецепт не найден")
+
+        existing = await self.find_menu_item(menu_id, recipe_id, day)
+        if existing is not None:
+            await self.change_menu_item_count(existing.id, existing.count + count)
+            updated = await self.get_menu_item(existing.id)
+            if updated is None:
+                raise RuntimeError("Не удалось обновить блюдо в меню")
+            return updated
+
+        cursor = self._db.execute(
+            """
+            INSERT INTO menu_items (menu_id, recipe_id, recipe_name, day, count)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (menu_id, recipe_id, recipe.name, day, count),
+        )
+        item_id = cursor.lastrowid
+        cursor.close()
+        self._db.commit()
+        item = await self.get_menu_item(item_id)
+        if item is None:
+            raise RuntimeError("Не удалось добавить блюдо в меню")
+        return item
+
+    async def find_menu_item(
+        self,
+        menu_id: int,
+        recipe_id: int,
+        day: int | None,
+    ) -> MenuItem | None:
+        if day is None:
+            row = self._fetchone(
+                """
+                SELECT id, menu_id, recipe_id, recipe_name, day, count
+                FROM menu_items
+                WHERE menu_id = ? AND recipe_id = ? AND day IS NULL
+                """,
+                (menu_id, recipe_id),
+            )
+        else:
+            row = self._fetchone(
+                """
+                SELECT id, menu_id, recipe_id, recipe_name, day, count
+                FROM menu_items
+                WHERE menu_id = ? AND recipe_id = ? AND day = ?
+                """,
+                (menu_id, recipe_id, day),
+            )
+        return _menu_item_from_row(row) if row else None
+
+    async def get_menu_item(self, item_id: int) -> MenuItem | None:
+        row = self._fetchone(
+            """
+            SELECT id, menu_id, recipe_id, recipe_name, day, count
+            FROM menu_items
+            WHERE id = ?
+            """,
+            (item_id,),
+        )
+        return _menu_item_from_row(row) if row else None
+
+    async def list_menu_items(self, menu_id: int) -> list[MenuItem]:
+        cursor = self._db.execute(
+            """
+            SELECT id, menu_id, recipe_id, recipe_name, day, count
+            FROM menu_items
+            WHERE menu_id = ?
+            ORDER BY day IS NULL, day, id
+            """,
+            (menu_id,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [_menu_item_from_row(row) for row in rows]
+
+    async def move_menu_item(self, item_id: int, day: int | None) -> MenuItem | None:
+        item = await self.get_menu_item(item_id)
+        if item is None:
+            return None
+
+        if item.recipe_id is not None:
+            existing = await self.find_menu_item(item.menu_id, item.recipe_id, day)
+            if existing is not None and existing.id != item.id:
+                await self.change_menu_item_count(existing.id, existing.count + item.count)
+                await self.delete_menu_item(item.id)
+                return await self.get_menu_item(existing.id)
+
+        self._db.execute("UPDATE menu_items SET day = ? WHERE id = ?", (day, item_id))
+        self._db.commit()
+        return await self.get_menu_item(item_id)
+
+    async def change_menu_item_count(self, item_id: int, count: int) -> None:
+        if count <= 0:
+            await self.delete_menu_item(item_id)
+            return
+        self._db.execute("UPDATE menu_items SET count = ? WHERE id = ?", (count, item_id))
+        self._db.commit()
+
+    async def decrement_menu_item(self, item_id: int) -> None:
+        item = await self.get_menu_item(item_id)
+        if item is None:
+            return
+        await self.change_menu_item_count(item.id, item.count - 1)
+
+    async def delete_menu_item(self, item_id: int) -> None:
+        self._db.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
+        self._db.commit()
+
     def _replace_recipe_ingredients(self, recipe_id: int, ingredients: list[dict]) -> None:
         self._db.execute("DELETE FROM recipe_ingredients WHERE recipe_id = ?", (recipe_id,))
         self._db.executemany(
@@ -535,4 +716,23 @@ def _recipe_summary_from_row(row: sqlite3.Row) -> RecipeSummary:
         category_id=row["category_id"],
         category_name=row["category_name"],
         created_at=row["created_at"],
+    )
+
+
+def _menu_from_row(row: sqlite3.Row) -> Menu:
+    return Menu(
+        id=row["id"],
+        week_start=row["week_start"],
+        created_at=row["created_at"],
+    )
+
+
+def _menu_item_from_row(row: sqlite3.Row) -> MenuItem:
+    return MenuItem(
+        id=row["id"],
+        menu_id=row["menu_id"],
+        recipe_id=row["recipe_id"],
+        recipe_name=row["recipe_name"],
+        day=row["day"],
+        count=row["count"],
     )
