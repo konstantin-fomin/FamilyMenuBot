@@ -1,6 +1,8 @@
 import pytest
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import CallbackQuery, User
 
+from app.middlewares.callback_answer import CallbackAnswerMiddleware
 from app.services.telegram import safe_edit_text
 
 
@@ -39,3 +41,47 @@ async def test_safe_edit_text_sends_new_message_when_edit_target_missing():
 
     assert result == "answered"
     assert message.answers == [("Новый текст", "keyboard")]
+
+
+def _callback_query_with_answer(answer):
+    callback = CallbackQuery(
+        id="1",
+        from_user=User(id=1, is_bot=False, first_name="Анна"),
+        chat_instance="chat",
+        data="test",
+    )
+    object.__setattr__(callback, "answer", answer)
+    return callback
+
+
+@pytest.mark.asyncio
+async def test_callback_answer_middleware_answers_if_handler_does_not():
+    calls = []
+
+    async def answer(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    async def handler(event, data):
+        return "ok"
+
+    callback = _callback_query_with_answer(answer)
+    result = await CallbackAnswerMiddleware()(handler, callback, {})
+
+    assert result == "ok"
+    assert calls == [((), {})]
+
+
+@pytest.mark.asyncio
+async def test_callback_answer_middleware_does_not_answer_twice():
+    calls = []
+
+    async def answer(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    async def handler(event, data):
+        await event.answer("Готово")
+
+    callback = _callback_query_with_answer(answer)
+    await CallbackAnswerMiddleware()(handler, callback, {})
+
+    assert calls == [(("Готово",), {})]

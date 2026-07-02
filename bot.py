@@ -8,7 +8,7 @@ from app.config import load_config
 from app.database.storage import Database
 from app.handlers import setup_routers
 from app.logging_config import setup_logging
-from app.middlewares import LoggingMiddleware
+from app.middlewares import CallbackAnswerMiddleware, LoggingMiddleware
 
 
 async def main() -> None:
@@ -27,6 +27,7 @@ async def main() -> None:
     dispatcher["db"] = database
     dispatcher.message.outer_middleware(LoggingMiddleware())
     dispatcher.callback_query.outer_middleware(LoggingMiddleware())
+    dispatcher.callback_query.middleware(CallbackAnswerMiddleware())
     setup_routers(dispatcher)
 
     try:
