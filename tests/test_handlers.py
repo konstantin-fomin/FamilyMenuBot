@@ -7,6 +7,11 @@ from aiogram.filters import CommandObject
 from app.database import Database
 from app.handlers import setup_routers
 from app.handlers.menu import development_stub
+from app.handlers.recipes import (
+    RECIPE_NAME_INPUT_ERROR,
+    _validate_recipe_name,
+    add_recipe_name,
+)
 from app.handlers.start import start_command
 from app.keyboards import main_menu_keyboard
 from app.texts import (
@@ -36,6 +41,18 @@ class FakeMessage:
     async def answer(self, text: str, reply_markup=None) -> None:
         self.answers.append(text)
         self.reply_markups.append(reply_markup)
+
+
+class FakeState:
+    def __init__(self) -> None:
+        self.data = {}
+        self.state = None
+
+    async def update_data(self, **kwargs) -> None:
+        self.data.update(kwargs)
+
+    async def set_state(self, state) -> None:
+        self.state = state
 
 
 @pytest.fixture
@@ -73,6 +90,40 @@ async def test_development_buttons_answer_stub(db):
         await development_stub(message, db)
 
         assert message.answers == [DEVELOPMENT_STUB_TEXT]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "курица 1 кг\nкартошка 6 шт",
+        "Очень длинное название рецепта которое точно длиннее шестидесяти символов",
+    ],
+)
+def test_recipe_name_validation_rejects_ingredient_like_input(text):
+    name, error = _validate_recipe_name(text)
+
+    assert name is None
+    assert error == RECIPE_NAME_INPUT_ERROR
+
+
+def test_recipe_name_validation_saves_single_line_name():
+    name, error = _validate_recipe_name("  Борщ   домашний  ")
+
+    assert name == "Борщ домашний"
+    assert error is None
+
+
+@pytest.mark.asyncio
+async def test_add_recipe_name_reasks_on_multiline_input(db):
+    await db.create_owner_if_first(telegram_id=1, name="Анна")
+    message = FakeMessage(user_id=1, name="Анна", text="курица 1 кг\nкартошка 6 шт")
+    state = FakeState()
+
+    await add_recipe_name(message, db, state)
+
+    assert message.answers == [RECIPE_NAME_INPUT_ERROR]
+    assert state.data == {}
+    assert state.state is None
 
 
 @pytest.mark.asyncio

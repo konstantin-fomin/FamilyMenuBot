@@ -30,6 +30,24 @@ from app.texts import RECIPES_BUTTON
 
 router = Router(name="recipes")
 CANCEL_TEXT = "❌ Отмена"
+MAX_RECIPE_NAME_LENGTH = 60
+RECIPE_NAME_HINT = "Напишите короткое название рецепта, например: Борщ."
+RECIPE_NAME_INPUT_ERROR = (
+    "Это похоже на список ингредиентов, а не на название 🙂 "
+    "Название нужно короткое, например: Борщ. Попробуйте ещё раз"
+)
+INGREDIENTS_INPUT_HINT = (
+    "Пришлите ингредиенты списком, каждый с новой строки.\n\n"
+    "Например:\n"
+    "курица 1.5 кг\n"
+    "картошка 6 шт\n"
+    "соль по вкусу"
+)
+STEPS_INPUT_HINT = (
+    "Пришлите шаги приготовления одним сообщением.\n\n"
+    "Например: Нарезать овощи, залить водой и варить 40 минут.\n"
+    "Если шаги пока не нужны, нажмите «Пропустить»."
+)
 
 
 @router.message(F.text == RECIPES_BUTTON)
@@ -62,7 +80,7 @@ async def start_add_recipe(callback: CallbackQuery, db: Database, state: FSMCont
     await state.clear()
     await state.set_state(AddRecipe.name)
     await callback.message.answer(
-        "➕ <b>Новый рецепт</b>\n\nНапишите название рецепта.",
+        f"➕ <b>Новый рецепт</b>\n\n{RECIPE_NAME_HINT}",
         reply_markup=cancel_keyboard(),
     )
     await callback.answer()
@@ -74,9 +92,9 @@ async def add_recipe_name(message: Message, db: Database, state: FSMContext) -> 
     if user is None:
         return
 
-    name = _clean_text(message.text)
-    if not name:
-        await message.answer("Название не должно быть пустым. Напишите название рецепта.")
+    name, error = _validate_recipe_name(message.text)
+    if error:
+        await message.answer(error)
         return
 
     await state.update_data(name=name)
@@ -103,11 +121,7 @@ async def add_recipe_category(callback: CallbackQuery, db: Database, state: FSMC
     await state.update_data(category_id=category.id, category_name=category.name)
     await state.set_state(AddRecipe.ingredients)
     await callback.message.answer(
-        "Пришлите ингредиенты списком, каждый с новой строки.\n\n"
-        "Например:\n"
-        "курица 1.5 кг\n"
-        "картошка 6 шт\n"
-        "соль по вкусу",
+        INGREDIENTS_INPUT_HINT,
         reply_markup=cancel_keyboard(),
     )
     await callback.answer()
@@ -115,7 +129,7 @@ async def add_recipe_category(callback: CallbackQuery, db: Database, state: FSMC
 
 @router.message(StateFilter(AddRecipe.category))
 async def add_recipe_category_unexpected(message: Message) -> None:
-    await message.answer("Пожалуйста, выберите категорию кнопкой ниже.")
+    await message.answer("Пожалуйста, выберите категорию кнопкой ниже. Например: 🍲 Супы.")
 
 
 @router.message(StateFilter(AddRecipe.ingredients))
@@ -126,7 +140,7 @@ async def add_recipe_ingredients(message: Message, db: Database, state: FSMConte
 
     ingredients = parse_ingredients(message.text or "")
     if not ingredients:
-        await message.answer("Не вижу ингредиентов. Пришлите список, каждый с новой строки.")
+        await message.answer("Не вижу ингредиентов.\n\n" + INGREDIENTS_INPUT_HINT)
         return
 
     await state.update_data(ingredients=_ingredients_to_dicts(ingredients))
@@ -141,7 +155,7 @@ async def add_recipe_ingredients(message: Message, db: Database, state: FSMConte
 async def retry_add_recipe_ingredients(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AddRecipe.ingredients)
     await callback.message.answer(
-        "Хорошо, пришлите список ингредиентов заново.",
+        "Хорошо, пришлите список ингредиентов заново.\n\n" + INGREDIENTS_INPUT_HINT,
         reply_markup=cancel_keyboard(),
     )
     await callback.answer()
@@ -151,8 +165,7 @@ async def retry_add_recipe_ingredients(callback: CallbackQuery, state: FSMContex
 async def confirm_add_recipe_ingredients(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AddRecipe.steps)
     await callback.message.answer(
-        "Теперь пришлите шаги приготовления одним сообщением.\n\n"
-        "Если шаги пока не нужны, нажмите «Пропустить».",
+        STEPS_INPUT_HINT,
         reply_markup=steps_keyboard(),
     )
     await callback.answer()
@@ -160,7 +173,10 @@ async def confirm_add_recipe_ingredients(callback: CallbackQuery, state: FSMCont
 
 @router.message(StateFilter(AddRecipe.confirm_ingredients))
 async def add_recipe_confirm_ingredients_unexpected(message: Message) -> None:
-    await message.answer("Подтвердите ингредиенты кнопкой «✅ Верно» или исправьте список.")
+    await message.answer(
+        "Подтвердите ингредиенты кнопкой «✅ Верно» или исправьте список.\n\n"
+        "Если исправляете, пример строки: картошка 6 шт."
+    )
 
 
 @router.callback_query(StateFilter(AddRecipe.steps), F.data == "recipes:add:skip_steps")
@@ -212,7 +228,10 @@ async def save_new_recipe(callback: CallbackQuery, db: Database, state: FSMConte
 
 @router.message(StateFilter(AddRecipe.confirm_save))
 async def add_recipe_confirm_save_unexpected(message: Message) -> None:
-    await message.answer("Сохраните рецепт кнопкой «💾 Сохранить» или отмените действие.")
+    await message.answer(
+        "Сохраните рецепт кнопкой «💾 Сохранить» или отмените действие.\n\n"
+        "Если заметили ошибку, нажмите «❌ Отмена» и добавьте рецепт заново."
+    )
 
 
 @router.callback_query(F.data.startswith("recipes:list:"))
@@ -293,18 +312,18 @@ async def choose_recipe_edit_field(callback: CallbackQuery, db: Database, state:
 
     await state.update_data(recipe_id=recipe_id)
     prompts: dict[str, tuple[State, str]] = {
-        "name": (EditRecipe.name, "Напишите новое название рецепта."),
+        "name": (EditRecipe.name, "Напишите новое короткое название. Например: Борщ."),
         "ingredients": (
             EditRecipe.ingredients,
-            "Пришлите новый список ингредиентов целиком, каждый с новой строки.",
+            "Пришлите новый список ингредиентов целиком.\n\n" + INGREDIENTS_INPUT_HINT,
         ),
-        "steps": (EditRecipe.steps, "Пришлите новый текст шагов приготовления."),
+        "steps": (EditRecipe.steps, STEPS_INPUT_HINT),
     }
     if field == "category":
         await state.set_state(EditRecipe.category)
         categories = await db.list_categories_with_counts()
         await callback.message.answer(
-            "Выберите новую категорию.",
+            "Выберите новую категорию. Например: 🍲 Супы.",
             reply_markup=categories_keyboard(categories, "recipes:edit_category"),
         )
     elif field in prompts:
@@ -323,9 +342,9 @@ async def edit_recipe_name(message: Message, db: Database, state: FSMContext) ->
     if user is None:
         return
 
-    name = _clean_text(message.text)
-    if not name:
-        await message.answer("Название не должно быть пустым. Напишите новое название.")
+    name, error = _validate_recipe_name(message.text)
+    if error:
+        await message.answer(error)
         return
 
     recipe_id = (await state.get_data())["recipe_id"]
@@ -354,7 +373,7 @@ async def edit_recipe_category(callback: CallbackQuery, db: Database, state: FSM
 
 @router.message(StateFilter(EditRecipe.category))
 async def edit_recipe_category_unexpected(message: Message) -> None:
-    await message.answer("Пожалуйста, выберите категорию кнопкой ниже.")
+    await message.answer("Пожалуйста, выберите категорию кнопкой ниже. Например: 🍲 Супы.")
 
 
 @router.message(StateFilter(EditRecipe.ingredients))
@@ -365,7 +384,7 @@ async def edit_recipe_ingredients(message: Message, db: Database, state: FSMCont
 
     ingredients = parse_ingredients(message.text or "")
     if not ingredients:
-        await message.answer("Не вижу ингредиентов. Пришлите список заново.")
+        await message.answer("Не вижу ингредиентов.\n\n" + INGREDIENTS_INPUT_HINT)
         return
 
     recipe_id = (await state.get_data())["recipe_id"]
@@ -535,6 +554,16 @@ def _ingredients_to_dicts(ingredients: list[ParsedIngredient]) -> list[dict]:
 
 def _clean_text(text: str | None) -> str:
     return " ".join((text or "").strip().split())
+
+
+def _validate_recipe_name(text: str | None) -> tuple[str | None, str | None]:
+    raw_text = text or ""
+    name = _clean_text(raw_text)
+    if not name:
+        return None, "Название не должно быть пустым. " + RECIPE_NAME_HINT
+    if "\n" in raw_text.strip() or len(name) > MAX_RECIPE_NAME_LENGTH:
+        return None, RECIPE_NAME_INPUT_ERROR
+    return name, None
 
 
 def _last_int(value: str) -> int:
