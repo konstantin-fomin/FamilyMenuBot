@@ -31,6 +31,29 @@ venv/bin/python bot.py
 База создается автоматически в `data/bot.db`.
 Логи пишутся в `logs/bot.log`.
 
+## Docker
+
+Основной production-like запуск:
+
+```bash
+docker compose up -d --build
+```
+
+Контейнер:
+
+- сервис и container name: `family-menu-bot`;
+- restart policy: `unless-stopped`;
+- env: `.env` через `env_file`;
+- timezone: `Europe/Berlin`;
+- volumes: `./data:/app/data`, `./logs:/app/logs`.
+
+Проверка после запуска:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 family-menu-bot
+```
+
 ## Тесты
 
 Основная проверка:

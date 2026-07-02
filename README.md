@@ -58,6 +58,34 @@ venv/bin/python bot.py
 
 При первом запуске бот создаст папку `data/` и SQLite-базу `data/bot.db`.
 
+## Docker
+
+Сборка и запуск:
+
+```bash
+docker compose up -d --build
+```
+
+Остановка:
+
+```bash
+docker compose down
+```
+
+Перезапуск:
+
+```bash
+docker compose restart family-menu-bot
+```
+
+Логи:
+
+```bash
+docker compose logs -f family-menu-bot
+```
+
+Контейнер использует `.env` через `env_file`; сам `.env` не попадает в Docker image. Папки `data/` и `logs/` смонтированы с хоста в `/app/data` и `/app/logs`, поэтому база и логи переживают пересборку контейнера.
+
 ## Проверки
 
 ```bash

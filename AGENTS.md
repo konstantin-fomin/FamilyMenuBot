@@ -10,6 +10,8 @@
 
 ```bash
 venv/bin/python bot.py
+docker compose up -d --build
+docker compose logs -f family-menu-bot
 venv/bin/pytest
 venv/bin/python -m py_compile bot.py app/config.py app/database/storage.py app/handlers/start.py app/handlers/family.py app/handlers/menu.py
 ```
@@ -25,6 +27,7 @@ venv/bin/python -m py_compile bot.py app/config.py app/database/storage.py app/h
 - `app/texts.py` - единый источник текстов кнопок и общих ответов.
 - `app/middlewares/logging.py` - логирование входящих событий и ошибок.
 - `tests/` - тесты базы и приглашений.
+- `Dockerfile`, `docker-compose.yml`, `.dockerignore` - контейнерный запуск.
 
 ## Инварианты
 
