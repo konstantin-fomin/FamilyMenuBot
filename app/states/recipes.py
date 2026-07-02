@@ -15,3 +15,8 @@ class EditRecipe(StatesGroup):
     category = State()
     ingredients = State()
     steps = State()
+
+
+class Shopping(StatesGroup):
+    browsing = State()
+    manual = State()

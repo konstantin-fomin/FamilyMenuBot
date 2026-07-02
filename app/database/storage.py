@@ -83,6 +83,19 @@ class MenuItem:
     count: int
 
 
+@dataclass(frozen=True)
+class ShoppingItem:
+    id: int
+    week_start: str
+    name: str
+    amount: float | None
+    unit: str
+    status: str
+    source: str
+    recipe_names: str
+    position: int
+
+
 DEFAULT_CATEGORIES = (
     "🍲 Супы",
     "🍖 Основные блюда",
@@ -197,6 +210,21 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_unique_recipe_no_day
                 ON menu_items (menu_id, recipe_id)
                 WHERE recipe_id IS NOT NULL AND day IS NULL;
+
+            CREATE TABLE IF NOT EXISTS shopping_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                week_start TEXT NOT NULL,
+                name TEXT NOT NULL,
+                amount REAL,
+                unit TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('to_buy', 'have', 'bought')),
+                source TEXT NOT NULL CHECK (source IN ('menu', 'manual')),
+                recipe_names TEXT NOT NULL DEFAULT '',
+                position INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_shopping_items_week_start
+                ON shopping_items (week_start);
             """
         )
         self._seed_categories()
@@ -620,6 +648,133 @@ class Database:
         self._db.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
         self._db.commit()
 
+    async def list_shopping_items(self, week_start: str) -> list[ShoppingItem]:
+        cursor = self._db.execute(
+            """
+            SELECT id, week_start, name, amount, unit, status, source, recipe_names, position
+            FROM shopping_items
+            WHERE week_start = ?
+            ORDER BY
+                CASE status WHEN 'to_buy' THEN 0 WHEN 'have' THEN 1 ELSE 2 END,
+                position,
+                id
+            """,
+            (week_start,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [_shopping_item_from_row(row) for row in rows]
+
+    async def shopping_items_count(self, week_start: str) -> int:
+        row = self._fetchone(
+            "SELECT COUNT(*) AS count FROM shopping_items WHERE week_start = ?",
+            (week_start,),
+        )
+        return int(row["count"])
+
+    async def get_shopping_item(self, item_id: int) -> ShoppingItem | None:
+        row = self._fetchone(
+            """
+            SELECT id, week_start, name, amount, unit, status, source, recipe_names, position
+            FROM shopping_items
+            WHERE id = ?
+            """,
+            (item_id,),
+        )
+        return _shopping_item_from_row(row) if row else None
+
+    async def create_shopping_item(
+        self,
+        week_start: str,
+        name: str,
+        amount: float | None,
+        unit: str,
+        status: str = "to_buy",
+        source: str = "manual",
+        recipe_names: str = "",
+        position: int | None = None,
+    ) -> ShoppingItem:
+        if position is None:
+            position = await self.next_shopping_position(week_start)
+        cursor = self._db.execute(
+            """
+            INSERT INTO shopping_items
+                (week_start, name, amount, unit, status, source, recipe_names, position)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (week_start, name, amount, unit, status, source, recipe_names, position),
+        )
+        item_id = cursor.lastrowid
+        cursor.close()
+        self._db.commit()
+        item = await self.get_shopping_item(item_id)
+        if item is None:
+            raise RuntimeError("Не удалось создать позицию покупок")
+        return item
+
+    async def update_shopping_item_status(self, item_id: int, status: str) -> None:
+        self._db.execute(
+            "UPDATE shopping_items SET status = ? WHERE id = ?",
+            (status, item_id),
+        )
+        self._db.commit()
+
+    async def update_shopping_menu_item(
+        self,
+        item_id: int,
+        name: str,
+        amount: float | None,
+        unit: str,
+        recipe_names: str,
+    ) -> None:
+        self._db.execute(
+            """
+            UPDATE shopping_items
+            SET name = ?, amount = ?, unit = ?, recipe_names = ?
+            WHERE id = ?
+            """,
+            (name, amount, unit, recipe_names, item_id),
+        )
+        self._db.commit()
+
+    async def delete_shopping_item(self, item_id: int) -> None:
+        self._db.execute("DELETE FROM shopping_items WHERE id = ?", (item_id,))
+        self._db.commit()
+
+    async def delete_bought_shopping_items(self, week_start: str) -> int:
+        cursor = self._db.execute(
+            "DELETE FROM shopping_items WHERE week_start = ? AND status = 'bought'",
+            (week_start,),
+        )
+        deleted = cursor.rowcount
+        cursor.close()
+        self._db.commit()
+        return deleted
+
+    async def delete_missing_menu_shopping_items(self, week_start: str, keep_ids: list[int]) -> None:
+        if keep_ids:
+            placeholders = ",".join("?" for _ in keep_ids)
+            self._db.execute(
+                f"""
+                DELETE FROM shopping_items
+                WHERE week_start = ? AND source = 'menu' AND id NOT IN ({placeholders})
+                """,
+                (week_start, *keep_ids),
+            )
+        else:
+            self._db.execute(
+                "DELETE FROM shopping_items WHERE week_start = ? AND source = 'menu'",
+                (week_start,),
+            )
+        self._db.commit()
+
+    async def next_shopping_position(self, week_start: str) -> int:
+        row = self._fetchone(
+            "SELECT COALESCE(MAX(position), 0) + 1 AS position FROM shopping_items WHERE week_start = ?",
+            (week_start,),
+        )
+        return int(row["position"])
+
     def _replace_recipe_ingredients(self, recipe_id: int, ingredients: list[dict]) -> None:
         self._db.execute("DELETE FROM recipe_ingredients WHERE recipe_id = ?", (recipe_id,))
         self._db.executemany(
@@ -735,4 +890,18 @@ def _menu_item_from_row(row: sqlite3.Row) -> MenuItem:
         recipe_name=row["recipe_name"],
         day=row["day"],
         count=row["count"],
+    )
+
+
+def _shopping_item_from_row(row: sqlite3.Row) -> ShoppingItem:
+    return ShoppingItem(
+        id=row["id"],
+        week_start=row["week_start"],
+        name=row["name"],
+        amount=row["amount"],
+        unit=row["unit"],
+        status=row["status"],
+        source=row["source"],
+        recipe_names=row["recipe_names"],
+        position=row["position"],
     )
