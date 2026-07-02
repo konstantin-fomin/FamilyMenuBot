@@ -24,6 +24,7 @@ from app.keyboards.recipes import (
     steps_keyboard,
 )
 from app.services.ingredients import ParsedIngredient, format_ingredient, parse_ingredients
+from app.services.telegram import safe_edit_text
 from app.states.recipes import AddRecipe, EditRecipe
 from app.texts import RECIPES_BUTTON
 
@@ -64,7 +65,7 @@ async def recipes_home_callback(callback: CallbackQuery, db: Database) -> None:
     if user is None:
         return
     categories = await db.list_categories_with_counts()
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "📚 <b>Рецепты</b>\n\nВыберите действие или категорию.",
         reply_markup=recipes_home_keyboard(categories),
     )
@@ -219,7 +220,7 @@ async def save_new_recipe(callback: CallbackQuery, db: Database, state: FSMConte
         ingredients=data["ingredients"],
     )
     await state.clear()
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "Рецепт сохранён 💾\n\n" + _recipe_card_text(recipe),
         reply_markup=recipe_card_keyboard(recipe.id, 0, 0),
     )
@@ -261,7 +262,7 @@ async def recipes_list(callback: CallbackQuery, db: Database) -> None:
     else:
         text = f"{title}\n\nВыберите рецепт:"
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         text,
         reply_markup=recipes_list_keyboard(recipes, category_id, page, total),
     )
@@ -290,7 +291,7 @@ async def edit_recipe(callback: CallbackQuery, db: Database) -> None:
         await callback.answer("Рецепт не найден.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         f"✏️ Что изменить в рецепте «{escape(recipe.name)}»?",
         reply_markup=edit_recipe_keyboard(recipe.id),
     )
@@ -367,7 +368,7 @@ async def edit_recipe_category(callback: CallbackQuery, db: Database, state: FSM
     recipe_id = (await state.get_data())["recipe_id"]
     await db.update_recipe_category(recipe_id, category.id)
     await state.clear()
-    await callback.message.edit_text("Категория обновлена.")
+    await safe_edit_text(callback.message, "Категория обновлена.")
     await _show_recipe_card(callback, db, recipe_id, 0, 0)
 
 
@@ -415,7 +416,7 @@ async def delete_recipe_prompt(callback: CallbackQuery, db: Database) -> None:
         await callback.answer("Рецепт не найден.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         f"Точно удалить «{escape(recipe.name)}»?",
         reply_markup=delete_confirm_keyboard(recipe.id),
     )
@@ -432,7 +433,7 @@ async def delete_recipe_confirm(callback: CallbackQuery, db: Database) -> None:
     recipe = await db.get_recipe(recipe_id)
     await db.delete_recipe(recipe_id)
     name = recipe.name if recipe else "Рецепт"
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         f"«{escape(name)}» удалён.",
         reply_markup=recipes_home_keyboard(await db.list_categories_with_counts()),
     )
@@ -479,7 +480,7 @@ async def _show_recipe_card(
         await callback.answer("Рецепт не найден.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         _recipe_card_text(recipe),
         reply_markup=recipe_card_keyboard(recipe.id, category_id, page),
     )

@@ -19,6 +19,7 @@ from app.keyboards.weekly_menu import (
     weekly_menu_recipes_keyboard,
 )
 from app.services.menus import DAY_NAMES, format_week_range, week_start_by_offset
+from app.services.telegram import safe_edit_text
 from app.texts import WEEKLY_MENU_BUTTON
 
 
@@ -56,7 +57,7 @@ async def weekly_menu_add(callback: CallbackQuery, db: Database) -> None:
         return
 
     if await db.recipes_count() == 0:
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             "Пока нет рецептов, из которых можно составить меню.\n\n"
             "Сначала добавьте рецепт в разделе «📚 Рецепты».",
             reply_markup=weekly_menu_keyboard(_last_int(callback.data)),
@@ -66,7 +67,7 @@ async def weekly_menu_add(callback: CallbackQuery, db: Database) -> None:
 
     offset = _last_int(callback.data)
     categories = await db.list_categories_with_counts()
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "➕ <b>Добавить блюда</b>\n\nСначала выберите категорию рецептов.",
         reply_markup=weekly_menu_categories_keyboard(categories, offset),
     )
@@ -95,7 +96,7 @@ async def weekly_menu_category(callback: CallbackQuery, db: Database) -> None:
     if not recipes:
         text = f"{title}\n\nВ этой категории пока нет рецептов."
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         text,
         reply_markup=weekly_menu_recipes_keyboard(recipes, offset, category_id, page, total),
     )
@@ -114,7 +115,7 @@ async def weekly_menu_recipe(callback: CallbackQuery, db: Database) -> None:
         await callback.answer("Рецепт не найден.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         f"На какой день добавить «{escape(recipe.name)}»?",
         reply_markup=day_choice_keyboard(
             int(offset_raw),
@@ -146,7 +147,7 @@ async def weekly_menu_choose_day(callback: CallbackQuery, db: Database) -> None:
         offset=int(page_raw) * RECIPES_PAGE_SIZE,
     )
     total = await db.recipes_count(int(category_raw))
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "Блюдо добавлено. Можно выбрать ещё рецепт.",
         reply_markup=weekly_menu_recipes_keyboard(
             recipes,
@@ -168,14 +169,14 @@ async def weekly_menu_edit(callback: CallbackQuery, db: Database) -> None:
     menu = await _menu_for_offset(db, offset)
     items = await db.list_menu_items(menu.id)
     if not items:
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             "В меню пока нет блюд для изменения.",
             reply_markup=weekly_menu_keyboard(offset),
         )
         await callback.answer()
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "✏️ <b>Изменить меню</b>\n\nВыберите блюдо.",
         reply_markup=edit_menu_items_keyboard(items, offset),
     )
@@ -194,7 +195,7 @@ async def weekly_menu_item_actions(callback: CallbackQuery, db: Database) -> Non
         await callback.answer("Блюдо уже убрано из меню.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         _menu_item_text(item),
         reply_markup=menu_item_actions_keyboard(item.id, int(offset_raw)),
     )
@@ -213,7 +214,7 @@ async def weekly_menu_move(callback: CallbackQuery, db: Database) -> None:
         await callback.answer("Блюдо уже убрано из меню.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         f"Куда перенести «{escape(item.recipe_name)}»?",
         reply_markup=move_day_keyboard(item.id, int(offset_raw)),
     )
@@ -268,7 +269,7 @@ async def _send_weekly_menu(message: Message, db: Database, offset: int) -> None
 async def _edit_weekly_menu(callback: CallbackQuery, db: Database, offset: int) -> None:
     menu = await _menu_for_offset(db, offset)
     items = await db.list_menu_items(menu.id)
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         _weekly_menu_text(menu.week_start, items),
         reply_markup=weekly_menu_keyboard(offset),
     )

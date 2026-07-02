@@ -12,7 +12,7 @@ from app.handlers.recipes import (
     _validate_recipe_name,
     add_recipe_name,
 )
-from app.handlers.start import start_command
+from app.handlers.start import help_command, start_command
 from app.keyboards import main_menu_keyboard
 from app.texts import (
     ACCESS_DENIED_TEXT,
@@ -77,6 +77,7 @@ def test_all_routers_are_registered():
         "weekly_menu",
         "shopping",
         "menu",
+        "errors",
     ]
 
 
@@ -144,6 +145,20 @@ async def test_start_deep_link_consumes_invitation_and_adds_member(db):
     assert member.role == "member"
     assert stored_invitation.used_by_user_id == member.id
     assert any("Теперь у вас есть доступ" in text for text in message.answers)
+
+
+@pytest.mark.asyncio
+async def test_help_command_for_registered_user(db):
+    await db.create_owner_if_first(telegram_id=1, name="Анна")
+    message = FakeMessage(user_id=1, name="Анна", text="/help")
+
+    await help_command(message, db)
+
+    assert "📚 <b>Рецепты</b>" in message.answers[0]
+    assert "📅 <b>Меню недели</b>" in message.answers[0]
+    assert "🛒 <b>Покупки</b>" in message.answers[0]
+    assert "👨‍👩‍👧 <b>Семья</b>" in message.answers[0]
+    assert message.reply_markups[0] is not None
 
 
 @pytest.mark.asyncio

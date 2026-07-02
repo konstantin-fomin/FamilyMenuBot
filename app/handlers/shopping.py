@@ -21,6 +21,7 @@ from app.services.shopping import (
     next_status,
     rebuild_shopping_list_from_menu,
 )
+from app.services.telegram import safe_edit_text
 from app.states.recipes import Shopping
 from app.texts import SHOPPING_BUTTON
 
@@ -144,7 +145,7 @@ async def shopping_clear_prompt(callback: CallbackQuery, db: Database) -> None:
     if user is None:
         return
     _, _, offset_raw, page_raw = callback.data.split(":")
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "Удалить все позиции со статусом «куплено»?",
         reply_markup=clear_bought_confirm_keyboard(int(offset_raw), int(page_raw)),
     )
@@ -174,7 +175,7 @@ async def _send_shopping_list(message: Message, db: Database, offset: int, page:
 async def _edit_shopping_list(callback: CallbackQuery, db: Database, offset: int, page: int) -> None:
     week_start = _week_start(offset)
     all_items = await db.list_shopping_items(week_start)
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         _shopping_text(week_start, all_items),
         reply_markup=_shopping_keyboard_for(all_items, offset, page),
     )

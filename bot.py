@@ -3,6 +3,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from app.bot_profile import setup_bot_profile
 from app.config import load_config
 from app.database.storage import Database
 from app.handlers import setup_routers
@@ -29,6 +30,7 @@ async def main() -> None:
     setup_routers(dispatcher)
 
     try:
+        await setup_bot_profile(bot)
         await dispatcher.start_polling(bot)
     finally:
         await database.close()

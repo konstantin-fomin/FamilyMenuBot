@@ -1,5 +1,5 @@
 from aiogram import Router
-from aiogram.filters import CommandObject, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 
 from app.database import Database, User
@@ -20,7 +20,7 @@ async def start_command(message: Message, command: CommandObject, db: Database) 
     existing_user = await db.get_user_by_telegram_id(telegram_id)
     if existing_user is not None:
         await message.answer(
-            _welcome_back_text(existing_user),
+            "Главное меню открыто.",
             reply_markup=main_menu_keyboard(),
         )
         return
@@ -46,6 +46,19 @@ async def start_command(message: Message, command: CommandObject, db: Database) 
     await message.answer(ACCESS_DENIED_TEXT)
 
 
+@router.message(Command("help"))
+async def help_command(message: Message, db: Database) -> None:
+    if message.from_user is None:
+        return
+
+    user = await db.get_user_by_telegram_id(message.from_user.id)
+    if user is None:
+        await message.answer(ACCESS_DENIED_TEXT)
+        return
+
+    await message.answer(_help_text(user), reply_markup=main_menu_keyboard())
+
+
 def _owner_welcome_text() -> str:
     return (
         "Добро пожаловать в семейный бот меню 🍽️\n\n"
@@ -64,11 +77,6 @@ def _member_welcome_text() -> str:
     )
 
 
-def _welcome_back_text(user: User) -> str:
-    role = "владелец" if user.role == "owner" else "участник семьи"
-    return f"С возвращением, {user.name}! Вы вошли как {role}."
-
-
 def _start_payload(message: Message, command: CommandObject) -> str:
     if command.args:
         return command.args.strip()
@@ -81,3 +89,21 @@ def _start_payload(message: Message, command: CommandObject) -> str:
         return ""
 
     return parts[1].strip()
+
+
+def _help_text(user: User) -> str:
+    owner_hint = (
+        "\n\nВы владелец семьи: пригласить близких можно в разделе «👨‍👩‍👧 Семья»."
+        if user.role == "owner"
+        else ""
+    )
+    return (
+        "🍽 <b>Справка по семейному меню</b>\n\n"
+        "📚 <b>Рецепты</b> — храните семейные блюда, ингредиенты и шаги приготовления.\n"
+        "📅 <b>Меню недели</b> — собирайте блюда на текущую или следующую неделю.\n"
+        "🛒 <b>Покупки</b> — создавайте список из меню, отмечайте купленное и добавляйте своё.\n"
+        "👨‍👩‍👧 <b>Семья</b> — смотрите участников и приглашайте близких.\n\n"
+        "Лучше начать с добавления нескольких рецептов, затем собрать меню недели "
+        "и обновить список покупок."
+        f"{owner_hint}"
+    )
