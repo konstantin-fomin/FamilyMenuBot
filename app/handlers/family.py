@@ -5,12 +5,13 @@ from app.database import Database, User
 from app.handlers.common import ACCESS_DENIED_TEXT, require_user
 from app.keyboards import family_keyboard
 from app.services.invitations import build_invite_link
+from app.texts import FAMILY_BUTTON
 
 
 router = Router(name="family")
 
 
-@router.message(F.text == "👨‍👩‍👧 Семья")
+@router.message(F.text == FAMILY_BUTTON)
 async def family_section(message: Message, db: Database) -> None:
     user = await require_user(message, db)
     if user is None:

@@ -2,9 +2,7 @@ from aiogram.types import Message
 
 from app.database import Database, User
 from app.keyboards import main_menu_keyboard
-
-
-ACCESS_DENIED_TEXT = "Это семейный бот. Попросите приглашение у владельца."
+from app.texts import ACCESS_DENIED_TEXT
 
 
 async def require_user(message: Message, db: Database) -> User | None:

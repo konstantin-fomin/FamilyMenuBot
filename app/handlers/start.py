@@ -25,7 +25,7 @@ async def start_command(message: Message, command: CommandObject, db: Database) 
         )
         return
 
-    invite_code = (command.args or "").strip()
+    invite_code = _start_payload(message, command)
     if invite_code:
         invited_user = await db.consume_invitation(invite_code, telegram_id, name)
         if invited_user is not None:
@@ -67,3 +67,17 @@ def _member_welcome_text() -> str:
 def _welcome_back_text(user: User) -> str:
     role = "владелец" if user.role == "owner" else "участник семьи"
     return f"С возвращением, {user.name}! Вы вошли как {role}."
+
+
+def _start_payload(message: Message, command: CommandObject) -> str:
+    if command.args:
+        return command.args.strip()
+
+    if not message.text:
+        return ""
+
+    parts = message.text.strip().split(maxsplit=1)
+    if len(parts) != 2:
+        return ""
+
+    return parts[1].strip()
