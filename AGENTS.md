@@ -4,7 +4,7 @@
 
 ## Проект
 
-Семейный Telegram-бот на Python и aiogram 3.x. Сейчас реализован только этап 1: каркас, доступ по приглашениям, раздел семьи и заглушки будущих разделов.
+Семейный Telegram-бот на Python и aiogram 3.x. Сейчас реализованы доступ по приглашениям, раздел семьи, раздел рецептов и заглушки будущих разделов меню недели/покупок.
 
 ## Важные команды
 
@@ -23,8 +23,10 @@ venv/bin/python -m py_compile bot.py app/config.py app/database/storage.py app/h
 - `app/database/storage.py` - SQLite-схема и доступ к данным.
 - `app/handlers/start.py` - `/start`, owner/member flow.
 - `app/handlers/family.py` - список семьи и приглашения.
+- `app/handlers/recipes.py` - рецепты, FSM добавления/редактирования, просмотр и удаление.
 - `app/keyboards/` - Telegram-клавиатуры.
 - `app/texts.py` - единый источник текстов кнопок и общих ответов.
+- `app/services/ingredients.py` - парсер и нормализация ингредиентов.
 - `app/middlewares/logging.py` - логирование входящих событий и ошибок.
 - `tests/` - тесты базы и приглашений.
 - `Dockerfile`, `docker-compose.yml`, `.dockerignore` - контейнерный запуск.

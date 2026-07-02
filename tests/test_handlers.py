@@ -56,6 +56,7 @@ def test_all_routers_are_registered():
     assert [router.name for router in dispatcher.sub_routers] == [
         "start",
         "family",
+        "recipes",
         "menu",
     ]
 
