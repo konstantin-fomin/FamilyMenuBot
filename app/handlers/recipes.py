@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from html import escape
 
 from aiogram import F, Router
@@ -12,20 +13,25 @@ from app.database import Database, Recipe, User
 from app.handlers.common import ACCESS_DENIED_TEXT, require_user
 from app.keyboards.recipes import (
     RECIPES_PAGE_SIZE,
+    add_recipe_method_keyboard,
     cancel_keyboard,
     categories_keyboard,
     delete_confirm_keyboard,
+    edit_photo_keyboard,
     edit_recipe_keyboard,
     ingredients_confirm_keyboard,
+    one_message_confirm_keyboard,
+    photo_skip_keyboard,
     recipe_card_keyboard,
     recipes_home_keyboard,
     recipes_list_keyboard,
     save_recipe_keyboard,
+    search_results_keyboard,
     steps_keyboard,
 )
 from app.services.ingredients import ParsedIngredient, format_ingredient, parse_ingredients
 from app.services.telegram import safe_edit_text
-from app.states.recipes import AddRecipe, EditRecipe
+from app.states.recipes import AddRecipe, EditRecipe, RecipeSearch
 from app.texts import RECIPES_BUTTON
 
 
@@ -49,6 +55,26 @@ STEPS_INPUT_HINT = (
     "Например: Нарезать овощи, залить водой и варить 40 минут.\n"
     "Если шаги пока не нужны, нажмите «Пропустить»."
 )
+ONE_MESSAGE_INPUT_HINT = (
+    "Пришлите рецепт одним сообщением:\n\n"
+    "первая строка — название\n"
+    "дальше — ингредиенты, каждый с новой строки\n"
+    "пустая строка отделяет шаги приготовления\n\n"
+    "Например:\n"
+    "Борщ\n"
+    "говядина 500 г\n"
+    "картошка 4 шт\n\n"
+    "Нарезать овощи и варить до готовности."
+)
+PHOTO_INPUT_HINT = "Пришлите фото блюда или нажмите «Пропустить»."
+PHOTO_CAPTION_LIMIT = 1024
+
+
+@dataclass(frozen=True)
+class OneMessageRecipeDraft:
+    name: str
+    ingredients: list[ParsedIngredient]
+    steps: str
 
 
 @router.message(F.text == RECIPES_BUTTON)
@@ -79,12 +105,111 @@ async def start_add_recipe(callback: CallbackQuery, db: Database, state: FSMCont
         return
 
     await state.clear()
+    await state.set_state(AddRecipe.method)
+    await callback.message.answer(
+        "➕ <b>Новый рецепт</b>\n\nКак удобнее добавить рецепт?",
+        reply_markup=add_recipe_method_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(StateFilter(AddRecipe.method), F.data == "recipes:add_method:steps")
+async def start_add_recipe_by_steps(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
     await state.set_state(AddRecipe.name)
     await callback.message.answer(
         f"➕ <b>Новый рецепт</b>\n\n{RECIPE_NAME_HINT}",
         reply_markup=cancel_keyboard(),
     )
     await callback.answer()
+
+
+@router.callback_query(StateFilter(AddRecipe.method), F.data == "recipes:add_method:one")
+async def start_add_recipe_one_message(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    await state.set_state(AddRecipe.one_message)
+    await callback.message.answer(ONE_MESSAGE_INPUT_HINT, reply_markup=cancel_keyboard())
+    await callback.answer()
+
+
+@router.message(StateFilter(AddRecipe.method))
+async def add_recipe_method_unexpected(message: Message) -> None:
+    await message.answer("Пожалуйста, выберите способ добавления кнопкой ниже.")
+
+
+@router.message(StateFilter(AddRecipe.one_message))
+async def add_recipe_one_message(message: Message, db: Database, state: FSMContext) -> None:
+    user = await require_user(message, db)
+    if user is None:
+        return
+
+    draft, error = parse_one_message_recipe(message.text or "")
+    if error:
+        await message.answer(error + "\n\n" + ONE_MESSAGE_INPUT_HINT, reply_markup=cancel_keyboard())
+        return
+
+    await state.update_data(
+        name=draft.name,
+        ingredients=_ingredients_to_dicts(draft.ingredients),
+        steps=draft.steps,
+        photo_file_id=None,
+    )
+    await state.set_state(AddRecipe.one_category)
+    categories = await db.list_categories_with_counts()
+    await message.answer(
+        "Я понял рецепт так:\n\n"
+        + _draft_recipe_card_from_data(
+            name=draft.name,
+            ingredients=draft.ingredients,
+            steps=draft.steps,
+            category_name=None,
+            photo_file_id=None,
+        )
+        + "\n\nВыберите категорию рецепта.",
+        reply_markup=categories_keyboard(categories, "recipes:add_one_category"),
+    )
+
+
+@router.callback_query(StateFilter(AddRecipe.one_category), F.data.startswith("recipes:add_one_category:"))
+async def add_recipe_one_category(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    category_id = _last_int(callback.data)
+    category = await db.get_category(category_id)
+    if category is None:
+        await callback.answer("Категория не найдена.", show_alert=True)
+        return
+
+    await state.update_data(category_id=category.id, category_name=category.name)
+    await state.set_state(AddRecipe.confirm_save)
+    await callback.message.answer(
+        await _draft_recipe_card(state),
+        reply_markup=one_message_confirm_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(StateFilter(AddRecipe.confirm_save), F.data == "recipes:add:one_retry")
+async def retry_add_recipe_one_message(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddRecipe.one_message)
+    await callback.message.answer(
+        "Хорошо, пришлите рецепт одним сообщением заново.\n\n" + ONE_MESSAGE_INPUT_HINT,
+        reply_markup=cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(AddRecipe.one_category))
+async def add_recipe_one_category_unexpected(message: Message) -> None:
+    await message.answer("Пожалуйста, выберите категорию кнопкой ниже. Например: 🍲 Супы.")
 
 
 @router.message(StateFilter(AddRecipe.name))
@@ -183,10 +308,10 @@ async def add_recipe_confirm_ingredients_unexpected(message: Message) -> None:
 @router.callback_query(StateFilter(AddRecipe.steps), F.data == "recipes:add:skip_steps")
 async def skip_add_recipe_steps(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(steps="")
-    await state.set_state(AddRecipe.confirm_save)
+    await state.set_state(AddRecipe.photo)
     await callback.message.answer(
-        await _draft_recipe_card(state),
-        reply_markup=save_recipe_keyboard(),
+        PHOTO_INPUT_HINT,
+        reply_markup=photo_skip_keyboard(),
     )
     await callback.answer()
 
@@ -198,11 +323,41 @@ async def add_recipe_steps(message: Message, db: Database, state: FSMContext) ->
         return
 
     await state.update_data(steps=_clean_text(message.text))
+    await state.set_state(AddRecipe.photo)
+    await message.answer(
+        PHOTO_INPUT_HINT,
+        reply_markup=photo_skip_keyboard(),
+    )
+
+
+@router.callback_query(StateFilter(AddRecipe.photo), F.data == "recipes:add:skip_photo")
+async def skip_add_recipe_photo(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(photo_file_id=None)
+    await state.set_state(AddRecipe.confirm_save)
+    await callback.message.answer(
+        await _draft_recipe_card(state),
+        reply_markup=save_recipe_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(AddRecipe.photo), F.photo)
+async def add_recipe_photo(message: Message, db: Database, state: FSMContext) -> None:
+    user = await require_user(message, db)
+    if user is None:
+        return
+
+    await state.update_data(photo_file_id=message.photo[-1].file_id)
     await state.set_state(AddRecipe.confirm_save)
     await message.answer(
         await _draft_recipe_card(state),
         reply_markup=save_recipe_keyboard(),
     )
+
+
+@router.message(StateFilter(AddRecipe.photo))
+async def add_recipe_photo_unexpected(message: Message) -> None:
+    await message.answer(PHOTO_INPUT_HINT, reply_markup=photo_skip_keyboard())
 
 
 @router.callback_query(StateFilter(AddRecipe.confirm_save), F.data == "recipes:add:save")
@@ -218,11 +373,14 @@ async def save_new_recipe(callback: CallbackQuery, db: Database, state: FSMConte
         steps=data.get("steps", ""),
         created_by=user.id,
         ingredients=data["ingredients"],
+        photo_file_id=data.get("photo_file_id"),
     )
     await state.clear()
-    await safe_edit_text(callback.message, 
-        "Рецепт сохранён 💾\n\n" + _recipe_card_text(recipe),
-        reply_markup=recipe_card_keyboard(recipe.id, 0, 0),
+    await _send_recipe_card(
+        callback.message,
+        recipe,
+        recipe_card_keyboard(recipe.id, 0, 0),
+        prefix="Рецепт сохранён 💾\n\n",
     )
     await callback.answer()
 
@@ -231,8 +389,56 @@ async def save_new_recipe(callback: CallbackQuery, db: Database, state: FSMConte
 async def add_recipe_confirm_save_unexpected(message: Message) -> None:
     await message.answer(
         "Сохраните рецепт кнопкой «💾 Сохранить» или отмените действие.\n\n"
-        "Если заметили ошибку, нажмите «❌ Отмена» и добавьте рецепт заново."
+        "Если заметили ошибку, нажмите «✏️ Исправить» или «❌ Отмена»."
     )
+
+
+@router.callback_query(F.data == "recipes:search")
+async def start_recipe_search(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    await state.clear()
+    await state.set_state(RecipeSearch.query)
+    await callback.message.answer(
+        "🔍 <b>Поиск рецептов</b>\n\nНапишите часть названия рецепта.",
+        reply_markup=cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(RecipeSearch.query))
+async def recipe_search_query(message: Message, db: Database, state: FSMContext) -> None:
+    user = await require_user(message, db)
+    if user is None:
+        return
+
+    query = _clean_text(message.text)
+    if not query:
+        await message.answer("Напишите, что искать. Например: суп или курица.")
+        return
+
+    await state.update_data(query=query)
+    await _send_search_results(message, db, query, 0)
+
+
+@router.callback_query(F.data.startswith("recipes:search_page:"))
+async def recipe_search_page(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    query = (await state.get_data()).get("query")
+    if not query:
+        await callback.message.answer(
+            "Поисковый запрос потерялся. Нажмите «🔍 Поиск» и попробуйте ещё раз."
+        )
+        await callback.answer()
+        return
+
+    page = max(_last_int(callback.data), 0)
+    await _edit_search_results(callback, db, query, page)
 
 
 @router.callback_query(F.data.startswith("recipes:list:"))
@@ -319,6 +525,10 @@ async def choose_recipe_edit_field(callback: CallbackQuery, db: Database, state:
             "Пришлите новый список ингредиентов целиком.\n\n" + INGREDIENTS_INPUT_HINT,
         ),
         "steps": (EditRecipe.steps, STEPS_INPUT_HINT),
+        "photo": (
+            EditRecipe.photo,
+            "Пришлите новое фото блюда. Если фото больше не нужно, нажмите «Удалить фото».",
+        ),
     }
     if field == "category":
         await state.set_state(EditRecipe.category)
@@ -326,6 +536,12 @@ async def choose_recipe_edit_field(callback: CallbackQuery, db: Database, state:
         await callback.message.answer(
             "Выберите новую категорию. Например: 🍲 Супы.",
             reply_markup=categories_keyboard(categories, "recipes:edit_category"),
+        )
+    elif field == "photo":
+        await state.set_state(EditRecipe.photo)
+        await callback.message.answer(
+            prompts[field][1],
+            reply_markup=edit_photo_keyboard(recipe.id, bool(recipe.photo_file_id)),
         )
     elif field in prompts:
         next_state, prompt = prompts[field]
@@ -404,6 +620,40 @@ async def edit_recipe_steps(message: Message, db: Database, state: FSMContext) -
     await _finish_edit(message, db, state, recipe_id)
 
 
+@router.message(StateFilter(EditRecipe.photo), F.photo)
+async def edit_recipe_photo(message: Message, db: Database, state: FSMContext) -> None:
+    user = await require_user(message, db)
+    if user is None:
+        return
+
+    recipe_id = (await state.get_data())["recipe_id"]
+    await db.update_recipe_photo(recipe_id, message.photo[-1].file_id)
+    await _finish_edit(message, db, state, recipe_id)
+
+
+@router.message(StateFilter(EditRecipe.photo))
+async def edit_recipe_photo_unexpected(message: Message) -> None:
+    await message.answer("Пришлите фото блюда или отмените действие.")
+
+
+@router.callback_query(F.data.startswith("recipes:edit_photo_delete:"))
+async def delete_recipe_photo(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    recipe_id = _last_int(callback.data)
+    recipe = await db.get_recipe(recipe_id)
+    if recipe is None:
+        await callback.answer("Рецепт не найден.", show_alert=True)
+        return
+
+    await db.update_recipe_photo(recipe_id, None)
+    await state.clear()
+    await callback.message.answer("Фото удалено.")
+    await _show_recipe_card(callback, db, recipe_id, 0, 0)
+
+
 @router.callback_query(F.data.startswith("recipes:delete:"))
 async def delete_recipe_prompt(callback: CallbackQuery, db: Database) -> None:
     user = await _require_callback_user(callback, db)
@@ -447,7 +697,7 @@ async def cancel_recipe_dialog(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-@router.message(StateFilter(AddRecipe, EditRecipe), F.text == CANCEL_TEXT)
+@router.message(StateFilter(AddRecipe, EditRecipe, RecipeSearch), F.text == CANCEL_TEXT)
 async def cancel_recipe_dialog_by_text(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Действие отменено.")
@@ -468,6 +718,49 @@ async def _require_callback_user(callback: CallbackQuery, db: Database) -> User 
     return user
 
 
+async def _send_search_results(message: Message, db: Database, query: str, page: int) -> None:
+    total = await db.search_recipes_count(query)
+    recipes = await db.search_recipes(
+        query,
+        limit=RECIPES_PAGE_SIZE,
+        offset=page * RECIPES_PAGE_SIZE,
+    )
+    await message.answer(
+        _search_results_text(query, total),
+        reply_markup=search_results_keyboard(recipes, page, total),
+    )
+
+
+async def _edit_search_results(
+    callback: CallbackQuery,
+    db: Database,
+    query: str,
+    page: int,
+) -> None:
+    total = await db.search_recipes_count(query)
+    recipes = await db.search_recipes(
+        query,
+        limit=RECIPES_PAGE_SIZE,
+        offset=page * RECIPES_PAGE_SIZE,
+    )
+    await safe_edit_text(
+        callback.message,
+        _search_results_text(query, total),
+        reply_markup=search_results_keyboard(recipes, page, total),
+    )
+    await callback.answer()
+
+
+def _search_results_text(query: str, total: int) -> str:
+    escaped_query = escape(query)
+    if total == 0:
+        return (
+            f"🔍 <b>Поиск:</b> {escaped_query}\n\n"
+            "Ничего не нашлось. Можно попробовать другое слово или посмотреть все рецепты."
+        )
+    return f"🔍 <b>Поиск:</b> {escaped_query}\n\nВыберите рецепт:"
+
+
 async def _show_recipe_card(
     callback: CallbackQuery,
     db: Database,
@@ -480,9 +773,10 @@ async def _show_recipe_card(
         await callback.answer("Рецепт не найден.", show_alert=True)
         return
 
-    await safe_edit_text(callback.message, 
-        _recipe_card_text(recipe),
-        reply_markup=recipe_card_keyboard(recipe.id, category_id, page),
+    await _send_recipe_card(
+        callback.message,
+        recipe,
+        recipe_card_keyboard(recipe.id, category_id, page),
     )
     await callback.answer()
 
@@ -490,10 +784,38 @@ async def _show_recipe_card(
 async def _finish_edit(message: Message, db: Database, state: FSMContext, recipe_id: int) -> None:
     await state.clear()
     recipe = await db.get_recipe(recipe_id)
-    await message.answer(
-        "Готово, рецепт обновлён.\n\n" + _recipe_card_text(recipe),
-        reply_markup=recipe_card_keyboard(recipe.id, 0, 0),
+    if recipe is None:
+        await message.answer("Рецепт не найден.")
+        return
+    await _send_recipe_card(
+        message,
+        recipe,
+        recipe_card_keyboard(recipe.id, 0, 0),
+        prefix="Готово, рецепт обновлён.\n\n",
     )
+
+
+async def _send_recipe_card(
+    message: Message,
+    recipe: Recipe,
+    reply_markup,
+    prefix: str = "",
+) -> None:
+    text = prefix + _recipe_card_text(recipe)
+    if not recipe.photo_file_id:
+        await message.answer(text, reply_markup=reply_markup)
+        return
+
+    if len(text) <= PHOTO_CAPTION_LIMIT:
+        await message.answer_photo(
+            photo=recipe.photo_file_id,
+            caption=text,
+            reply_markup=reply_markup,
+        )
+        return
+
+    await message.answer_photo(photo=recipe.photo_file_id)
+    await message.answer(text, reply_markup=reply_markup)
 
 
 async def _draft_recipe_card(state: FSMContext) -> str:
@@ -506,18 +828,38 @@ async def _draft_recipe_card(state: FSMContext) -> str:
         )
         for item in data["ingredients"]
     ]
+    return _draft_recipe_card_from_data(
+        name=data["name"],
+        ingredients=ingredients,
+        steps=data.get("steps", ""),
+        category_name=data.get("category_name"),
+        photo_file_id=data.get("photo_file_id"),
+    )
+
+
+def _draft_recipe_card_from_data(
+    name: str,
+    ingredients: list[ParsedIngredient],
+    steps: str,
+    category_name: str | None,
+    photo_file_id: str | None,
+) -> str:
     lines = [
         "Проверьте рецепт перед сохранением:",
         "",
-        f"🍽 <b>{escape(data['name'])}</b>",
-        f"Категория: {escape(data['category_name'])}",
+        f"🍽 <b>{escape(name)}</b>",
+    ]
+    if category_name:
+        lines.append(f"Категория: {escape(category_name)}")
+    lines.extend([
+        f"Фото: {'добавлено' if photo_file_id else 'не добавлено'}",
         "",
         "<b>Ингредиенты:</b>",
         _ingredients_preview(ingredients),
         "",
         "<b>Шаги:</b>",
-        escape(data.get("steps") or "Не указаны"),
-    ]
+        escape(steps or "Не указаны"),
+    ])
     return "\n".join(lines)
 
 
@@ -555,6 +897,37 @@ def _ingredients_to_dicts(ingredients: list[ParsedIngredient]) -> list[dict]:
 
 def _clean_text(text: str | None) -> str:
     return " ".join((text or "").strip().split())
+
+
+def parse_one_message_recipe(text: str) -> tuple[OneMessageRecipeDraft | None, str | None]:
+    raw_lines = text.strip().splitlines()
+    if not raw_lines:
+        return None, "Не вижу рецепт. Первая строка должна быть названием."
+
+    name = _clean_text(raw_lines[0])
+    if not name:
+        return None, "Первая строка должна быть названием рецепта."
+    if len(name) > MAX_RECIPE_NAME_LENGTH:
+        return None, "Название должно быть не длиннее 60 символов."
+
+    body_lines = raw_lines[1:]
+    separator_index = next(
+        (index for index, line in enumerate(body_lines) if not line.strip()),
+        None,
+    )
+    if separator_index is None:
+        ingredient_lines = body_lines
+        step_lines: list[str] = []
+    else:
+        ingredient_lines = body_lines[:separator_index]
+        step_lines = body_lines[separator_index + 1 :]
+
+    ingredients = parse_ingredients("\n".join(ingredient_lines))
+    if not ingredients:
+        return None, "Нужен хотя бы один ингредиент."
+
+    steps = "\n".join(line.strip() for line in step_lines).strip()
+    return OneMessageRecipeDraft(name=name, ingredients=ingredients, steps=steps), None
 
 
 def _validate_recipe_name(text: str | None) -> tuple[str | None, str | None]:

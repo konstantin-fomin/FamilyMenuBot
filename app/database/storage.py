@@ -54,6 +54,7 @@ class Recipe:
     steps: str
     created_by: int
     created_at: str
+    photo_file_id: str | None
     ingredients: list[RecipeIngredient]
 
 
@@ -164,6 +165,7 @@ class Database:
                 steps TEXT NOT NULL DEFAULT '',
                 created_by INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                photo_file_id TEXT,
                 FOREIGN KEY (category_id) REFERENCES categories(id),
                 FOREIGN KEY (created_by) REFERENCES users(id)
             );
@@ -227,6 +229,7 @@ class Database:
                 ON shopping_items (week_start);
             """
         )
+        self._ensure_recipe_photo_column()
         self._seed_categories()
         db.commit()
 
@@ -392,16 +395,17 @@ class Database:
         steps: str,
         created_by: int,
         ingredients: list[dict],
+        photo_file_id: str | None = None,
     ) -> Recipe:
         db = self._db
         db.execute("BEGIN IMMEDIATE")
         try:
             cursor = db.execute(
                 """
-                INSERT INTO recipes (name, category_id, steps, created_by)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO recipes (name, category_id, steps, created_by, photo_file_id)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (name, category_id, steps, created_by),
+                (name, category_id, steps, created_by, photo_file_id),
             )
             recipe_id = cursor.lastrowid
             cursor.close()
@@ -420,7 +424,7 @@ class Database:
         row = self._fetchone(
             """
             SELECT r.id, r.name, r.category_id, c.name AS category_name,
-                   r.steps, r.created_by, r.created_at
+                   r.steps, r.created_by, r.created_at, r.photo_file_id
             FROM recipes r
             JOIN categories c ON c.id = r.category_id
             WHERE r.id = ?
@@ -483,6 +487,18 @@ class Database:
             )
         return int(row["count"])
 
+    async def search_recipes(
+        self,
+        query: str,
+        limit: int = 8,
+        offset: int = 0,
+    ) -> list[RecipeSummary]:
+        matches = await self._search_recipe_rows(query)
+        return [_recipe_summary_from_row(row) for row in matches[offset : offset + limit]]
+
+    async def search_recipes_count(self, query: str) -> int:
+        return len(await self._search_recipe_rows(query))
+
     async def update_recipe_name(self, recipe_id: int, name: str) -> None:
         self._db.execute("UPDATE recipes SET name = ? WHERE id = ?", (name, recipe_id))
         self._db.commit()
@@ -496,6 +512,13 @@ class Database:
 
     async def update_recipe_steps(self, recipe_id: int, steps: str) -> None:
         self._db.execute("UPDATE recipes SET steps = ? WHERE id = ?", (steps, recipe_id))
+        self._db.commit()
+
+    async def update_recipe_photo(self, recipe_id: int, photo_file_id: str | None) -> None:
+        self._db.execute(
+            "UPDATE recipes SET photo_file_id = ? WHERE id = ?",
+            (photo_file_id, recipe_id),
+        )
         self._db.commit()
 
     async def update_recipe_ingredients(self, recipe_id: int, ingredients: list[dict]) -> None:
@@ -793,6 +816,35 @@ class Database:
             ],
         )
 
+    def _ensure_recipe_photo_column(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._db.execute("PRAGMA table_info(recipes)").fetchall()
+        }
+        if "photo_file_id" not in columns:
+            self._db.execute("ALTER TABLE recipes ADD COLUMN photo_file_id TEXT")
+
+    async def _search_recipe_rows(self, query: str) -> list[sqlite3.Row]:
+        normalized_query = query.strip().casefold()
+        if not normalized_query:
+            return []
+
+        cursor = self._db.execute(
+            """
+            SELECT r.id, r.name, r.category_id, c.name AS category_name, r.created_at
+            FROM recipes r
+            JOIN categories c ON c.id = r.category_id
+            ORDER BY r.created_at DESC, r.id DESC
+            """
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [
+            row
+            for row in rows
+            if normalized_query in str(row["name"]).casefold()
+        ]
+
     def _seed_categories(self) -> None:
         self._db.executemany(
             "INSERT OR IGNORE INTO categories (name) VALUES (?)",
@@ -860,6 +912,7 @@ def _recipe_from_row(row: sqlite3.Row, ingredients: list[RecipeIngredient]) -> R
         steps=row["steps"],
         created_by=row["created_by"],
         created_at=row["created_at"],
+        photo_file_id=row["photo_file_id"],
         ingredients=ingredients,
     )
 
