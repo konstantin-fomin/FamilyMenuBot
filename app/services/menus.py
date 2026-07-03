@@ -69,6 +69,10 @@ async def aggregate_menu_ingredients(db: Database, menu_id: int) -> list[Aggrega
     for item in await db.list_menu_items(menu_id):
         if item.recipe_id is None:
             continue
+        recipe = await db.get_recipe(item.recipe_id)
+        if recipe is None:
+            continue
+        scale = item.count * item.servings / recipe.servings
         for ingredient in await db.list_recipe_ingredients(item.recipe_id):
             name_key = ingredient.name.strip().lower()
             if ingredient.amount is None or ingredient.unit == TASTE_UNIT:
@@ -81,10 +85,10 @@ async def aggregate_menu_ingredients(db: Database, menu_id: int) -> list[Aggrega
 
             amount, unit = normalize_amount(ingredient.amount, ingredient.unit)
             key = (name_key, unit)
-            totals[key] = totals.get(key, 0) + amount * item.count
+            totals[key] = totals.get(key, 0) + amount * scale
 
     ingredients = [
-        AggregatedIngredient(name=name, amount=amount, unit=unit)
+        AggregatedIngredient(name=name, amount=round(amount, 2), unit=unit)
         for (name, unit), amount in sorted(totals.items())
     ]
     ingredients.extend(taste_names[name] for name in sorted(taste_names))

@@ -14,6 +14,7 @@ from app.keyboards.weekly_menu import (
     edit_menu_items_keyboard,
     menu_item_actions_keyboard,
     move_day_keyboard,
+    servings_choice_keyboard,
     weekly_menu_categories_keyboard,
     weekly_menu_keyboard,
     weekly_menu_recipes_keyboard,
@@ -134,12 +135,75 @@ async def weekly_menu_choose_day(callback: CallbackQuery, db: Database) -> None:
         return
 
     _, _, offset_raw, recipe_raw, day_raw, category_raw, page_raw = callback.data.split(":")
+    recipe = await db.get_recipe(int(recipe_raw))
+    if recipe is None:
+        await callback.answer("Рецепт не найден.", show_alert=True)
+        return
+    day = _day_from_raw(day_raw)
+    await safe_edit_text(
+        callback.message,
+        f"Сколько порций готовим для «{escape(recipe.name)}»?",
+        reply_markup=servings_choice_keyboard(
+            int(offset_raw),
+            recipe.id,
+            day,
+            int(category_raw),
+            int(page_raw),
+            recipe.servings,
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "wm:noop")
+async def weekly_menu_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("wm:sv:set:"))
+async def weekly_menu_set_servings(callback: CallbackQuery, db: Database) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    _, _, _, offset_raw, recipe_raw, day_raw, category_raw, page_raw, servings_raw = callback.data.split(":")
+    recipe = await db.get_recipe(int(recipe_raw))
+    if recipe is None:
+        await callback.answer("Рецепт не найден.", show_alert=True)
+        return
+
+    servings = max(int(servings_raw), 1)
+    await safe_edit_text(
+        callback.message,
+        f"Сколько порций готовим для «{escape(recipe.name)}»?",
+        reply_markup=servings_choice_keyboard(
+            int(offset_raw),
+            recipe.id,
+            _day_from_raw(day_raw),
+            int(category_raw),
+            int(page_raw),
+            servings,
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("wm:sv:add:"))
+async def weekly_menu_add_with_servings(callback: CallbackQuery, db: Database) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    _, _, _, offset_raw, recipe_raw, day_raw, category_raw, page_raw, servings_raw = callback.data.split(":")
     offset = int(offset_raw)
     day = _day_from_raw(day_raw)
     menu = await _menu_for_offset(db, offset)
-    item = await db.add_menu_item(menu.id, int(recipe_raw), day)
+    item = await db.add_menu_item(menu.id, int(recipe_raw), day, servings=int(servings_raw))
     day_text = DAY_NAMES[item.day] if item.day else "без дня"
-    await callback.answer(f"Добавлено: {item.recipe_name}, {day_text}", show_alert=False)
+    await callback.answer(
+        f"Добавлено: {item.recipe_name}, {day_text}, {item.servings} порц.",
+        show_alert=False,
+    )
 
     recipes = await db.list_recipes(
         category_id=int(category_raw),
@@ -318,7 +382,8 @@ def _menu_item_text(item: MenuItem) -> str:
     return (
         f"🍽 <b>{escape(item.recipe_name)}</b>\n"
         f"День: {day}\n"
-        f"Количество: {item.count}\n"
+        f"Порции: {item.servings}\n"
+        f"Повторов: {item.count}\n"
         + ("Рецепт удалён из базы, но позицию можно убрать из меню." if item.recipe_id is None else "")
     ).strip()
 
@@ -326,7 +391,7 @@ def _menu_item_text(item: MenuItem) -> str:
 def _format_menu_item(item: MenuItem) -> str:
     deleted = " (рецепт удалён)" if item.recipe_id is None else ""
     count = f" ×{item.count}" if item.count > 1 else ""
-    return f"{escape(item.recipe_name)}{deleted}{count}"
+    return f"{escape(item.recipe_name)}{deleted} · 👥 {item.servings} порц.{count}"
 
 
 def _day_from_raw(value: str) -> int | None:

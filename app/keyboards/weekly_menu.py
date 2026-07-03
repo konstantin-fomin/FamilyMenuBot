@@ -104,6 +104,45 @@ def day_choice_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def servings_choice_keyboard(
+    offset: int,
+    recipe_id: int,
+    day: int | None,
+    category_id: int,
+    page: int,
+    servings: int,
+) -> InlineKeyboardMarkup:
+    day_raw = day or 0
+    lower_servings = max(servings - 1, 1)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➖",
+                    callback_data=f"wm:sv:set:{offset}:{recipe_id}:{day_raw}:{category_id}:{page}:{lower_servings}",
+                ),
+                InlineKeyboardButton(text=f"👥 {servings}", callback_data="wm:noop"),
+                InlineKeyboardButton(
+                    text="➕",
+                    callback_data=f"wm:sv:set:{offset}:{recipe_id}:{day_raw}:{category_id}:{page}:{servings + 1}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✅ Добавить",
+                    callback_data=f"wm:sv:add:{offset}:{recipe_id}:{day_raw}:{category_id}:{page}:{servings}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data=f"wm:recipe:{offset}:{recipe_id}:{category_id}:{page}",
+                )
+            ],
+        ]
+    )
+
+
 def edit_menu_items_keyboard(items: list[MenuItem], offset: int) -> InlineKeyboardMarkup:
     keyboard = [
         [
@@ -122,7 +161,7 @@ def menu_item_actions_keyboard(item_id: int, offset: int) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📆 Поменять день", callback_data=f"wm:move:{offset}:{item_id}")],
-            [InlineKeyboardButton(text="➖ Убрать одну порцию", callback_data=f"wm:dec:{offset}:{item_id}")],
+            [InlineKeyboardButton(text="➖ Убрать один повтор", callback_data=f"wm:dec:{offset}:{item_id}")],
             [InlineKeyboardButton(text="🗑 Убрать блюдо целиком", callback_data=f"wm:del:{offset}:{item_id}")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"wm:edit:{offset}")],
         ]
@@ -154,4 +193,4 @@ def move_day_keyboard(item_id: int, offset: int) -> InlineKeyboardMarkup:
 def _item_button_text(item: MenuItem) -> str:
     suffix = f" ×{item.count}" if item.count > 1 else ""
     deleted = " (рецепт удалён)" if item.recipe_id is None else ""
-    return f"{item.recipe_name}{deleted}{suffix}"
+    return f"{item.recipe_name}{deleted} · 👥 {item.servings}{suffix}"

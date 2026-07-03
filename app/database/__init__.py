@@ -7,6 +7,7 @@ from app.database.storage import (
     Recipe,
     RecipeIngredient,
     RecipeSummary,
+    ShoppingDepartment,
     ShoppingItem,
     User,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "Recipe",
     "RecipeIngredient",
     "RecipeSummary",
+    "ShoppingDepartment",
     "ShoppingItem",
     "User",
 ]

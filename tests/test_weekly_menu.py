@@ -54,7 +54,18 @@ async def test_add_menu_item_repeats_increment_count(db):
 
     assert first.id == second.id
     assert second.count == 2
+    assert second.servings == recipe.servings
     assert len(await db.list_menu_items(menu.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_menu_item_stores_selected_servings(db):
+    recipe = await _create_recipe(db)
+    menu = await db.get_or_create_menu("2026-06-29")
+
+    item = await db.add_menu_item(menu.id, recipe.id, day=1, servings=6)
+
+    assert item.servings == 6
 
 
 @pytest.mark.asyncio

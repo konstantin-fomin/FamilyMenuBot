@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.database import ShoppingItem
+from app.database import ShoppingDepartment, ShoppingItem
 from app.services.shopping import shopping_item_button_text
 
 
@@ -35,6 +35,7 @@ def shopping_keyboard(
         keyboard.append([InlineKeyboardButton(text="🧾 Собрать список из меню", callback_data=f"shop:rebuild:{offset}:0")])
     else:
         keyboard.append([InlineKeyboardButton(text="➕ Добавить своё", callback_data=f"shop:manual:{offset}")])
+        keyboard.append([InlineKeyboardButton(text="🏷 Отделы", callback_data=f"shop:departments:{offset}:0")])
         keyboard.append([InlineKeyboardButton(text="🔄 Обновить из меню", callback_data=f"shop:rebuild:{offset}:{page}")])
         keyboard.append([InlineKeyboardButton(text="🧹 Убрать купленное", callback_data=f"shop:clear:{offset}:{page}")])
 
@@ -53,3 +54,55 @@ def clear_bought_confirm_keyboard(offset: int, page: int) -> InlineKeyboardMarku
             ]
         ]
     )
+
+
+def department_items_keyboard(
+    items: list[tuple[ShoppingItem, str]],
+    offset: int,
+    page: int,
+    total: int,
+) -> InlineKeyboardMarkup:
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=f"{item.name} · {department_name}",
+                callback_data=f"shop:dept_item:{offset}:{item.id}:{page}",
+            )
+        ]
+        for item, department_name in items
+    ]
+    pages = max((total - 1) // SHOPPING_PAGE_SIZE + 1, 1)
+    navigation = []
+    if page > 0:
+        navigation.append(
+            InlineKeyboardButton(text="⬅️", callback_data=f"shop:departments:{offset}:{page - 1}")
+        )
+    if page + 1 < pages:
+        navigation.append(
+            InlineKeyboardButton(text="➡️", callback_data=f"shop:departments:{offset}:{page + 1}")
+        )
+    if navigation:
+        keyboard.append(navigation)
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop:page:{offset}:0")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def department_choice_keyboard(
+    departments: list[ShoppingDepartment],
+    offset: int,
+    item_id: int,
+    page: int,
+) -> InlineKeyboardMarkup:
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=department.name,
+                callback_data=f"shop:dept_set:{offset}:{item_id}:{department.id}:{page}",
+            )
+        ]
+        for department in departments
+    ]
+    keyboard.append(
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop:departments:{offset}:{page}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

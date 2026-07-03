@@ -27,6 +27,7 @@ from app.keyboards.recipes import (
     recipes_list_keyboard,
     save_recipe_keyboard,
     search_results_keyboard,
+    servings_keyboard,
     steps_keyboard,
 )
 from app.services.ingredients import ParsedIngredient, format_ingredient, parse_ingredients
@@ -68,6 +69,8 @@ ONE_MESSAGE_INPUT_HINT = (
 )
 PHOTO_INPUT_HINT = "Пришлите фото блюда или нажмите «Пропустить»."
 PHOTO_CAPTION_LIMIT = 1024
+DEFAULT_SERVINGS = 4
+SERVINGS_INPUT_HINT = "На сколько порций этот рецепт? Выберите 2/4/6 или пришлите своё число."
 
 
 @dataclass(frozen=True)
@@ -159,6 +162,7 @@ async def add_recipe_one_message(message: Message, db: Database, state: FSMConte
         ingredients=_ingredients_to_dicts(draft.ingredients),
         steps=draft.steps,
         photo_file_id=None,
+        servings=DEFAULT_SERVINGS,
     )
     await state.set_state(AddRecipe.one_category)
     categories = await db.list_categories_with_counts()
@@ -170,6 +174,7 @@ async def add_recipe_one_message(message: Message, db: Database, state: FSMConte
             steps=draft.steps,
             category_name=None,
             photo_file_id=None,
+            servings=DEFAULT_SERVINGS,
         )
         + "\n\nВыберите категорию рецепта.",
         reply_markup=categories_keyboard(categories, "recipes:add_one_category"),
@@ -192,8 +197,16 @@ async def add_recipe_one_category(callback: CallbackQuery, db: Database, state: 
     await state.set_state(AddRecipe.confirm_save)
     await callback.message.answer(
         await _draft_recipe_card(state),
-        reply_markup=one_message_confirm_keyboard(),
+        reply_markup=one_message_confirm_keyboard((await state.get_data())["servings"]),
     )
+    await callback.answer()
+
+
+@router.callback_query(StateFilter(AddRecipe.confirm_save), F.data == "recipes:add:servings")
+async def change_one_message_recipe_servings(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(servings_target="confirm_save")
+    await state.set_state(AddRecipe.servings)
+    await callback.message.answer(SERVINGS_INPUT_HINT, reply_markup=servings_keyboard())
     await callback.answer()
 
 
@@ -245,12 +258,54 @@ async def add_recipe_category(callback: CallbackQuery, db: Database, state: FSMC
         return
 
     await state.update_data(category_id=category.id, category_name=category.name)
-    await state.set_state(AddRecipe.ingredients)
+    await state.update_data(servings_target="ingredients")
+    await state.set_state(AddRecipe.servings)
     await callback.message.answer(
+        SERVINGS_INPUT_HINT,
+        reply_markup=servings_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(StateFilter(AddRecipe.servings), F.data.startswith("recipes:add_servings:"))
+async def add_recipe_servings_button(callback: CallbackQuery, state: FSMContext) -> None:
+    servings = _last_int(callback.data)
+    await _continue_after_recipe_servings(callback.message, state, servings)
+    await callback.answer()
+
+
+@router.message(StateFilter(AddRecipe.servings))
+async def add_recipe_servings_text(message: Message, db: Database, state: FSMContext) -> None:
+    user = await require_user(message, db)
+    if user is None:
+        return
+
+    servings, error = _parse_servings(message.text)
+    if error:
+        await message.answer(error + "\n\n" + SERVINGS_INPUT_HINT, reply_markup=servings_keyboard())
+        return
+
+    await _continue_after_recipe_servings(message, state, servings)
+
+
+async def _continue_after_recipe_servings(message: Message, state: FSMContext, servings: int) -> None:
+    data = await state.get_data()
+    target = data.get("servings_target", "ingredients")
+    await state.update_data(servings=servings)
+
+    if target == "confirm_save":
+        await state.set_state(AddRecipe.confirm_save)
+        await message.answer(
+            await _draft_recipe_card(state),
+            reply_markup=one_message_confirm_keyboard(servings),
+        )
+        return
+
+    await state.set_state(AddRecipe.ingredients)
+    await message.answer(
         INGREDIENTS_INPUT_HINT,
         reply_markup=cancel_keyboard(),
     )
-    await callback.answer()
 
 
 @router.message(StateFilter(AddRecipe.category))
@@ -374,6 +429,7 @@ async def save_new_recipe(callback: CallbackQuery, db: Database, state: FSMConte
         created_by=user.id,
         ingredients=data["ingredients"],
         photo_file_id=data.get("photo_file_id"),
+        servings=int(data.get("servings", DEFAULT_SERVINGS)),
     )
     await state.clear()
     await _send_recipe_card(
@@ -529,6 +585,10 @@ async def choose_recipe_edit_field(callback: CallbackQuery, db: Database, state:
             EditRecipe.photo,
             "Пришлите новое фото блюда. Если фото больше не нужно, нажмите «Удалить фото».",
         ),
+        "servings": (
+            EditRecipe.servings,
+            "На сколько порций рассчитан рецепт? Выберите 2/4/6 или пришлите своё число.",
+        ),
     }
     if field == "category":
         await state.set_state(EditRecipe.category)
@@ -542,6 +602,12 @@ async def choose_recipe_edit_field(callback: CallbackQuery, db: Database, state:
         await callback.message.answer(
             prompts[field][1],
             reply_markup=edit_photo_keyboard(recipe.id, bool(recipe.photo_file_id)),
+        )
+    elif field == "servings":
+        await state.set_state(EditRecipe.servings)
+        await callback.message.answer(
+            prompts[field][1],
+            reply_markup=servings_keyboard("recipes:edit_servings"),
         )
     elif field in prompts:
         next_state, prompt = prompts[field]
@@ -617,6 +683,38 @@ async def edit_recipe_steps(message: Message, db: Database, state: FSMContext) -
 
     recipe_id = (await state.get_data())["recipe_id"]
     await db.update_recipe_steps(recipe_id, _clean_text(message.text))
+    await _finish_edit(message, db, state, recipe_id)
+
+
+@router.callback_query(StateFilter(EditRecipe.servings), F.data.startswith("recipes:edit_servings:"))
+async def edit_recipe_servings_button(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    recipe_id = (await state.get_data())["recipe_id"]
+    await db.update_recipe_servings(recipe_id, _last_int(callback.data))
+    await state.clear()
+    await callback.message.answer("Порции обновлены.")
+    await _show_recipe_card(callback, db, recipe_id, 0, 0)
+
+
+@router.message(StateFilter(EditRecipe.servings))
+async def edit_recipe_servings_text(message: Message, db: Database, state: FSMContext) -> None:
+    user = await require_user(message, db)
+    if user is None:
+        return
+
+    servings, error = _parse_servings(message.text)
+    if error:
+        await message.answer(
+            error + "\n\n" + SERVINGS_INPUT_HINT,
+            reply_markup=servings_keyboard("recipes:edit_servings"),
+        )
+        return
+
+    recipe_id = (await state.get_data())["recipe_id"]
+    await db.update_recipe_servings(recipe_id, servings)
     await _finish_edit(message, db, state, recipe_id)
 
 
@@ -834,6 +932,7 @@ async def _draft_recipe_card(state: FSMContext) -> str:
         steps=data.get("steps", ""),
         category_name=data.get("category_name"),
         photo_file_id=data.get("photo_file_id"),
+        servings=int(data.get("servings", DEFAULT_SERVINGS)),
     )
 
 
@@ -843,6 +942,7 @@ def _draft_recipe_card_from_data(
     steps: str,
     category_name: str | None,
     photo_file_id: str | None,
+    servings: int,
 ) -> str:
     lines = [
         "Проверьте рецепт перед сохранением:",
@@ -852,6 +952,7 @@ def _draft_recipe_card_from_data(
     if category_name:
         lines.append(f"Категория: {escape(category_name)}")
     lines.extend([
+        f"👥 {servings} {_portion_word(servings)}",
         f"Фото: {'добавлено' if photo_file_id else 'не добавлено'}",
         "",
         "<b>Ингредиенты:</b>",
@@ -867,6 +968,7 @@ def _recipe_card_text(recipe: Recipe) -> str:
     lines = [
         f"🍽 <b>{escape(recipe.name)}</b>",
         f"Категория: {escape(recipe.category_name)}",
+        f"👥 {recipe.servings} {_portion_word(recipe.servings)}",
         "",
         "<b>Ингредиенты:</b>",
     ]
@@ -897,6 +999,24 @@ def _ingredients_to_dicts(ingredients: list[ParsedIngredient]) -> list[dict]:
 
 def _clean_text(text: str | None) -> str:
     return " ".join((text or "").strip().split())
+
+
+def _parse_servings(text: str | None) -> tuple[int | None, str | None]:
+    value = (text or "").strip()
+    if not value.isdigit():
+        return None, "Порции должны быть целым числом."
+    servings = int(value)
+    if servings < 1 or servings > 99:
+        return None, "Укажите число порций от 1 до 99."
+    return servings, None
+
+
+def _portion_word(value: int) -> str:
+    if value % 10 == 1 and value % 100 != 11:
+        return "порция"
+    if 2 <= value % 10 <= 4 and not 12 <= value % 100 <= 14:
+        return "порции"
+    return "порций"
 
 
 def parse_one_message_recipe(text: str) -> tuple[OneMessageRecipeDraft | None, str | None]:

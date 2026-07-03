@@ -55,6 +55,7 @@ class Recipe:
     created_by: int
     created_at: str
     photo_file_id: str | None
+    servings: int
     ingredients: list[RecipeIngredient]
 
 
@@ -82,6 +83,7 @@ class MenuItem:
     recipe_name: str
     day: int | None
     count: int
+    servings: int
 
 
 @dataclass(frozen=True)
@@ -97,12 +99,32 @@ class ShoppingItem:
     position: int
 
 
+@dataclass(frozen=True)
+class ShoppingDepartment:
+    id: int
+    name: str
+    position: int
+
+
 DEFAULT_CATEGORIES = (
     "🍲 Супы",
     "🍖 Основные блюда",
     "🥗 Салаты и закуски",
     "🍰 Выпечка и десерты",
     "🥤 Напитки",
+    "📦 Прочее",
+)
+
+DEFAULT_RECIPE_SERVINGS = 4
+
+DEFAULT_SHOPPING_DEPARTMENTS = (
+    "🥬 Овощи и фрукты",
+    "🥩 Мясо и рыба",
+    "🥛 Молочное и яйца",
+    "🍞 Хлеб и выпечка",
+    "🥫 Бакалея",
+    "🧊 Заморозка",
+    "🧴 Бытовое",
     "📦 Прочее",
 )
 
@@ -166,6 +188,7 @@ class Database:
                 created_by INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 photo_file_id TEXT,
+                servings INTEGER NOT NULL DEFAULT 4 CHECK (servings > 0),
                 FOREIGN KEY (category_id) REFERENCES categories(id),
                 FOREIGN KEY (created_by) REFERENCES users(id)
             );
@@ -198,6 +221,7 @@ class Database:
                 recipe_name TEXT NOT NULL,
                 day INTEGER CHECK (day IS NULL OR day BETWEEN 1 AND 7),
                 count INTEGER NOT NULL DEFAULT 1 CHECK (count > 0),
+                servings INTEGER NOT NULL DEFAULT 4 CHECK (servings > 0),
                 FOREIGN KEY (menu_id) REFERENCES menus(id) ON DELETE CASCADE,
                 FOREIGN KEY (recipe_id) REFERENCES recipes(id) ON DELETE SET NULL
             );
@@ -227,10 +251,25 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_shopping_items_week_start
                 ON shopping_items (week_start);
+
+            CREATE TABLE IF NOT EXISTS shopping_departments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                position INTEGER NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS product_departments (
+                product_name TEXT PRIMARY KEY,
+                department_id INTEGER NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (department_id) REFERENCES shopping_departments(id)
+            );
             """
         )
-        self._ensure_recipe_photo_column()
+        self._ensure_recipe_columns()
+        self._ensure_menu_item_servings_column()
         self._seed_categories()
+        self._seed_shopping_departments()
         db.commit()
 
     async def get_user_by_telegram_id(self, telegram_id: int) -> User | None:
@@ -396,16 +435,17 @@ class Database:
         created_by: int,
         ingredients: list[dict],
         photo_file_id: str | None = None,
+        servings: int = DEFAULT_RECIPE_SERVINGS,
     ) -> Recipe:
         db = self._db
         db.execute("BEGIN IMMEDIATE")
         try:
             cursor = db.execute(
                 """
-                INSERT INTO recipes (name, category_id, steps, created_by, photo_file_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO recipes (name, category_id, steps, created_by, photo_file_id, servings)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (name, category_id, steps, created_by, photo_file_id),
+                (name, category_id, steps, created_by, photo_file_id, servings),
             )
             recipe_id = cursor.lastrowid
             cursor.close()
@@ -424,7 +464,7 @@ class Database:
         row = self._fetchone(
             """
             SELECT r.id, r.name, r.category_id, c.name AS category_name,
-                   r.steps, r.created_by, r.created_at, r.photo_file_id
+                   r.steps, r.created_by, r.created_at, r.photo_file_id, r.servings
             FROM recipes r
             JOIN categories c ON c.id = r.category_id
             WHERE r.id = ?
@@ -521,6 +561,13 @@ class Database:
         )
         self._db.commit()
 
+    async def update_recipe_servings(self, recipe_id: int, servings: int) -> None:
+        self._db.execute(
+            "UPDATE recipes SET servings = ? WHERE id = ?",
+            (servings, recipe_id),
+        )
+        self._db.commit()
+
     async def update_recipe_ingredients(self, recipe_id: int, ingredients: list[dict]) -> None:
         db = self._db
         db.execute("BEGIN IMMEDIATE")
@@ -559,14 +606,17 @@ class Database:
         recipe_id: int,
         day: int | None,
         count: int = 1,
+        servings: int | None = None,
     ) -> MenuItem:
         recipe = await self.get_recipe(recipe_id)
         if recipe is None:
             raise ValueError("Рецепт не найден")
+        servings = servings or recipe.servings
 
         existing = await self.find_menu_item(menu_id, recipe_id, day)
         if existing is not None:
             await self.change_menu_item_count(existing.id, existing.count + count)
+            await self.update_menu_item_servings(existing.id, servings)
             updated = await self.get_menu_item(existing.id)
             if updated is None:
                 raise RuntimeError("Не удалось обновить блюдо в меню")
@@ -574,10 +624,10 @@ class Database:
 
         cursor = self._db.execute(
             """
-            INSERT INTO menu_items (menu_id, recipe_id, recipe_name, day, count)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO menu_items (menu_id, recipe_id, recipe_name, day, count, servings)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (menu_id, recipe_id, recipe.name, day, count),
+            (menu_id, recipe_id, recipe.name, day, count, servings),
         )
         item_id = cursor.lastrowid
         cursor.close()
@@ -596,7 +646,7 @@ class Database:
         if day is None:
             row = self._fetchone(
                 """
-                SELECT id, menu_id, recipe_id, recipe_name, day, count
+                SELECT id, menu_id, recipe_id, recipe_name, day, count, servings
                 FROM menu_items
                 WHERE menu_id = ? AND recipe_id = ? AND day IS NULL
                 """,
@@ -605,7 +655,7 @@ class Database:
         else:
             row = self._fetchone(
                 """
-                SELECT id, menu_id, recipe_id, recipe_name, day, count
+                SELECT id, menu_id, recipe_id, recipe_name, day, count, servings
                 FROM menu_items
                 WHERE menu_id = ? AND recipe_id = ? AND day = ?
                 """,
@@ -616,7 +666,7 @@ class Database:
     async def get_menu_item(self, item_id: int) -> MenuItem | None:
         row = self._fetchone(
             """
-            SELECT id, menu_id, recipe_id, recipe_name, day, count
+            SELECT id, menu_id, recipe_id, recipe_name, day, count, servings
             FROM menu_items
             WHERE id = ?
             """,
@@ -627,7 +677,7 @@ class Database:
     async def list_menu_items(self, menu_id: int) -> list[MenuItem]:
         cursor = self._db.execute(
             """
-            SELECT id, menu_id, recipe_id, recipe_name, day, count
+            SELECT id, menu_id, recipe_id, recipe_name, day, count, servings
             FROM menu_items
             WHERE menu_id = ?
             ORDER BY day IS NULL, day, id
@@ -659,6 +709,13 @@ class Database:
             await self.delete_menu_item(item_id)
             return
         self._db.execute("UPDATE menu_items SET count = ? WHERE id = ?", (count, item_id))
+        self._db.commit()
+
+    async def update_menu_item_servings(self, item_id: int, servings: int) -> None:
+        self._db.execute(
+            "UPDATE menu_items SET servings = ? WHERE id = ?",
+            (servings, item_id),
+        )
         self._db.commit()
 
     async def decrement_menu_item(self, item_id: int) -> None:
@@ -798,6 +855,54 @@ class Database:
         )
         return int(row["position"])
 
+    async def list_shopping_departments(self) -> list[ShoppingDepartment]:
+        cursor = self._db.execute(
+            """
+            SELECT id, name, position
+            FROM shopping_departments
+            ORDER BY position
+            """
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [_shopping_department_from_row(row) for row in rows]
+
+    async def get_shopping_department(self, department_id: int) -> ShoppingDepartment | None:
+        row = self._fetchone(
+            """
+            SELECT id, name, position
+            FROM shopping_departments
+            WHERE id = ?
+            """,
+            (department_id,),
+        )
+        return _shopping_department_from_row(row) if row else None
+
+    async def get_product_department(self, product_name: str) -> ShoppingDepartment | None:
+        row = self._fetchone(
+            """
+            SELECT d.id, d.name, d.position
+            FROM product_departments p
+            JOIN shopping_departments d ON d.id = p.department_id
+            WHERE p.product_name = ?
+            """,
+            (product_name,),
+        )
+        return _shopping_department_from_row(row) if row else None
+
+    async def set_product_department(self, product_name: str, department_id: int) -> None:
+        self._db.execute(
+            """
+            INSERT INTO product_departments (product_name, department_id, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(product_name) DO UPDATE SET
+                department_id = excluded.department_id,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (product_name, department_id),
+        )
+        self._db.commit()
+
     def _replace_recipe_ingredients(self, recipe_id: int, ingredients: list[dict]) -> None:
         self._db.execute("DELETE FROM recipe_ingredients WHERE recipe_id = ?", (recipe_id,))
         self._db.executemany(
@@ -816,13 +921,36 @@ class Database:
             ],
         )
 
-    def _ensure_recipe_photo_column(self) -> None:
+    def _ensure_recipe_columns(self) -> None:
         columns = {
             row["name"]
             for row in self._db.execute("PRAGMA table_info(recipes)").fetchall()
         }
         if "photo_file_id" not in columns:
             self._db.execute("ALTER TABLE recipes ADD COLUMN photo_file_id TEXT")
+        if "servings" not in columns:
+            self._db.execute(
+                "ALTER TABLE recipes ADD COLUMN servings INTEGER NOT NULL DEFAULT 4 CHECK (servings > 0)"
+            )
+
+    def _ensure_menu_item_servings_column(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._db.execute("PRAGMA table_info(menu_items)").fetchall()
+        }
+        if "servings" not in columns:
+            self._db.execute(
+                "ALTER TABLE menu_items ADD COLUMN servings INTEGER NOT NULL DEFAULT 4 CHECK (servings > 0)"
+            )
+            self._db.execute(
+                """
+                UPDATE menu_items
+                SET servings = COALESCE(
+                    (SELECT recipes.servings FROM recipes WHERE recipes.id = menu_items.recipe_id),
+                    4
+                )
+                """
+            )
 
     async def _search_recipe_rows(self, query: str) -> list[sqlite3.Row]:
         normalized_query = query.strip().casefold()
@@ -849,6 +977,18 @@ class Database:
         self._db.executemany(
             "INSERT OR IGNORE INTO categories (name) VALUES (?)",
             [(name,) for name in DEFAULT_CATEGORIES],
+        )
+
+    def _seed_shopping_departments(self) -> None:
+        self._db.executemany(
+            """
+            INSERT OR IGNORE INTO shopping_departments (name, position)
+            VALUES (?, ?)
+            """,
+            [
+                (name, position)
+                for position, name in enumerate(DEFAULT_SHOPPING_DEPARTMENTS, start=1)
+            ],
         )
 
     def _fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None:
@@ -913,6 +1053,7 @@ def _recipe_from_row(row: sqlite3.Row, ingredients: list[RecipeIngredient]) -> R
         created_by=row["created_by"],
         created_at=row["created_at"],
         photo_file_id=row["photo_file_id"],
+        servings=row["servings"],
         ingredients=ingredients,
     )
 
@@ -943,6 +1084,7 @@ def _menu_item_from_row(row: sqlite3.Row) -> MenuItem:
         recipe_name=row["recipe_name"],
         day=row["day"],
         count=row["count"],
+        servings=row["servings"],
     )
 
 
@@ -956,5 +1098,13 @@ def _shopping_item_from_row(row: sqlite3.Row) -> ShoppingItem:
         status=row["status"],
         source=row["source"],
         recipe_names=row["recipe_names"],
+        position=row["position"],
+    )
+
+
+def _shopping_department_from_row(row: sqlite3.Row) -> ShoppingDepartment:
+    return ShoppingDepartment(
+        id=row["id"],
+        name=row["name"],
         position=row["position"],
     )

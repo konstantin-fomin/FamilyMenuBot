@@ -77,6 +77,19 @@ def photo_skip_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def servings_keyboard(prefix: str = "recipes:add_servings") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="2", callback_data=f"{prefix}:2"),
+                InlineKeyboardButton(text="4", callback_data=f"{prefix}:4"),
+                InlineKeyboardButton(text="6", callback_data=f"{prefix}:6"),
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="recipes:cancel")],
+        ]
+    )
+
+
 def save_recipe_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -88,9 +101,10 @@ def save_recipe_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def one_message_confirm_keyboard() -> InlineKeyboardMarkup:
+def one_message_confirm_keyboard(servings: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text=f"👥 Порции: {servings}", callback_data="recipes:add:servings")],
             [InlineKeyboardButton(text="💾 Сохранить", callback_data="recipes:add:save")],
             [InlineKeyboardButton(text="✏️ Исправить", callback_data="recipes:add:one_retry")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="recipes:cancel")],
@@ -190,6 +204,7 @@ def edit_recipe_keyboard(recipe_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Ингредиенты", callback_data=f"recipes:edit_field:{recipe_id}:ingredients")],
             [InlineKeyboardButton(text="Шаги", callback_data=f"recipes:edit_field:{recipe_id}:steps")],
             [InlineKeyboardButton(text="🖼 Фото", callback_data=f"recipes:edit_field:{recipe_id}:photo")],
+            [InlineKeyboardButton(text="👥 Порции", callback_data=f"recipes:edit_field:{recipe_id}:servings")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"recipes:view:{recipe_id}:0:0")],
         ]
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -9,7 +10,14 @@ from aiogram.types import CallbackQuery, Message
 
 from app.database import Database, ShoppingItem, User
 from app.handlers.common import ACCESS_DENIED_TEXT, require_user
-from app.keyboards.shopping import SHOPPING_PAGE_SIZE, clear_bought_confirm_keyboard, shopping_keyboard
+from app.keyboards.shopping import (
+    SHOPPING_PAGE_SIZE,
+    clear_bought_confirm_keyboard,
+    department_choice_keyboard,
+    department_items_keyboard,
+    shopping_keyboard,
+)
+from app.services.departments import normalize_product_name, resolve_department
 from app.services.menus import format_week_range, week_start_by_offset
 from app.services.shopping import (
     STATUS_BOUGHT,
@@ -163,11 +171,68 @@ async def shopping_clear_confirm(callback: CallbackQuery, db: Database) -> None:
     await _edit_shopping_list(callback, db, int(offset_raw), int(page_raw))
 
 
+@router.callback_query(F.data.startswith("shop:departments:"))
+async def shopping_departments(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    _, _, offset_raw, page_raw = callback.data.split(":")
+    offset = int(offset_raw)
+    page = int(page_raw)
+    await state.set_state(Shopping.browsing)
+    await state.update_data(offset=offset)
+    await _edit_department_items(callback, db, offset, page)
+
+
+@router.callback_query(F.data.startswith("shop:dept_item:"))
+async def shopping_department_item(callback: CallbackQuery, db: Database) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    _, _, offset_raw, item_raw, page_raw = callback.data.split(":")
+    item = await db.get_shopping_item(int(item_raw))
+    if item is None:
+        await callback.answer("Позиция уже удалена.", show_alert=True)
+        return
+
+    await safe_edit_text(
+        callback.message,
+        f"🏷 <b>Отдел для «{escape(item.name)}»</b>\n\nВыберите отдел магазина.",
+        reply_markup=department_choice_keyboard(
+            await db.list_shopping_departments(),
+            int(offset_raw),
+            item.id,
+            int(page_raw),
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("shop:dept_set:"))
+async def shopping_department_set(callback: CallbackQuery, db: Database) -> None:
+    user = await _require_callback_user(callback, db)
+    if user is None:
+        return
+
+    _, _, offset_raw, item_raw, department_raw, page_raw = callback.data.split(":")
+    item = await db.get_shopping_item(int(item_raw))
+    department = await db.get_shopping_department(int(department_raw))
+    if item is None or department is None:
+        await callback.answer("Не нашёл позицию или отдел.", show_alert=True)
+        return
+
+    await db.set_product_department(normalize_product_name(item.name), department.id)
+    await callback.answer("Отдел сохранён.")
+    await _edit_department_items(callback, db, int(offset_raw), int(page_raw))
+
+
 async def _send_shopping_list(message: Message, db: Database, offset: int, page: int) -> None:
     week_start = _week_start(offset)
     all_items = await db.list_shopping_items(week_start)
     await message.answer(
-        _shopping_text(week_start, all_items),
+        await _shopping_text(db, week_start, all_items),
         reply_markup=_shopping_keyboard_for(all_items, offset, page),
     )
 
@@ -176,8 +241,25 @@ async def _edit_shopping_list(callback: CallbackQuery, db: Database, offset: int
     week_start = _week_start(offset)
     all_items = await db.list_shopping_items(week_start)
     await safe_edit_text(callback.message, 
-        _shopping_text(week_start, all_items),
+        await _shopping_text(db, week_start, all_items),
         reply_markup=_shopping_keyboard_for(all_items, offset, page),
+    )
+    await callback.answer()
+
+
+async def _edit_department_items(callback: CallbackQuery, db: Database, offset: int, page: int) -> None:
+    week_start = _week_start(offset)
+    all_items = await db.list_shopping_items(week_start)
+    start = page * SHOPPING_PAGE_SIZE
+    visible_items = all_items[start : start + SHOPPING_PAGE_SIZE]
+    entries = [
+        (item, (await resolve_department(db, item.name)).name)
+        for item in visible_items
+    ]
+    await safe_edit_text(
+        callback.message,
+        "🏷 <b>Отделы магазина</b>\n\nВыберите продукт, для которого нужно поправить отдел.",
+        reply_markup=department_items_keyboard(entries, offset, page, len(all_items)),
     )
     await callback.answer()
 
@@ -195,7 +277,7 @@ def _shopping_keyboard_for(items: list[ShoppingItem], offset: int, page: int):
     return shopping_keyboard(visible_items, offset, page, len(items))
 
 
-def _shopping_text(week_start_raw: str, items: list[ShoppingItem]) -> str:
+async def _shopping_text(db: Database, week_start_raw: str, items: list[ShoppingItem]) -> str:
     week_start = date.fromisoformat(week_start_raw)
     summary = _summary(items)
     lines = [
@@ -207,8 +289,39 @@ def _shopping_text(week_start_raw: str, items: list[ShoppingItem]) -> str:
     if not items:
         lines.append("Список пока пуст. Соберите его из меню недели.")
     else:
-        lines.append("Нажимайте на продукты, чтобы менять статус.")
+        lines.extend(await _department_lines(db, items))
+        lines.extend(["", "Нажимайте на продукты, чтобы менять статус."])
     return "\n".join(lines)
+
+
+async def _department_lines(db: Database, items: list[ShoppingItem]) -> list[str]:
+    departments = await db.list_shopping_departments()
+    groups: dict[int, list[ShoppingItem]] = {department.id: [] for department in departments}
+    department_by_id = {department.id: department for department in departments}
+    for item in items:
+        department = await resolve_department(db, item.name)
+        groups.setdefault(department.id, []).append(item)
+        department_by_id[department.id] = department
+
+    lines = []
+    for department in sorted(department_by_id.values(), key=lambda item: item.position):
+        department_items = groups.get(department.id, [])
+        if not department_items:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(f"<b>{department.name}</b>")
+        lines.extend(_shopping_item_line(item) for item in department_items)
+    return lines
+
+
+def _shopping_item_line(item: ShoppingItem) -> str:
+    icons = {
+        STATUS_TO_BUY: "🔲",
+        STATUS_HAVE: "🏠",
+        STATUS_BOUGHT: "✅",
+    }
+    return f"{icons[item.status]} {escape(item.name)} — {format_shopping_amount(item.amount, item.unit)}"
 
 
 def _summary(items: list[ShoppingItem]) -> dict[str, int]:

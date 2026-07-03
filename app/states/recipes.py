@@ -7,6 +7,7 @@ class AddRecipe(StatesGroup):
     category = State()
     one_message = State()
     one_category = State()
+    servings = State()
     ingredients = State()
     confirm_ingredients = State()
     steps = State()
@@ -20,6 +21,7 @@ class EditRecipe(StatesGroup):
     ingredients = State()
     steps = State()
     photo = State()
+    servings = State()
 
 
 class RecipeSearch(StatesGroup):

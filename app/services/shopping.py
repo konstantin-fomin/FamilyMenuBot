@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 
 from app.database import Database, ShoppingItem
+from app.services.departments import normalize_product_name
 from app.services.ingredients import TASTE_UNIT, ParsedIngredient, normalize_amount, parse_ingredients
 
 
@@ -76,6 +77,10 @@ async def build_shopping_items_from_menu(db: Database, menu_id: int) -> list[Sho
     for menu_item in await db.list_menu_items(menu_id):
         if menu_item.recipe_id is None:
             continue
+        recipe = await db.get_recipe(menu_item.recipe_id)
+        if recipe is None:
+            continue
+        scale = menu_item.count * menu_item.servings / recipe.servings
         for ingredient in await db.list_recipe_ingredients(menu_item.recipe_id):
             name_key = normalize_product_name(ingredient.name)
             if ingredient.amount is None or ingredient.unit == TASTE_UNIT:
@@ -86,14 +91,14 @@ async def build_shopping_items_from_menu(db: Database, menu_id: int) -> list[Sho
 
             amount, unit = normalize_amount(ingredient.amount, ingredient.unit)
             key = (name_key, unit)
-            totals[key] = totals.get(key, 0) + amount * menu_item.count
+            totals[key] = totals.get(key, 0) + amount * scale
             display_names.setdefault(key, ingredient.name)
             recipe_names.setdefault(key, set()).add(menu_item.recipe_name)
 
     items = [
         ShoppingBuildItem(
             name=display_names[key],
-            amount=amount,
+            amount=round(amount, 2),
             unit=key[1],
             recipe_names=", ".join(sorted(recipe_names[key])),
         )
@@ -200,17 +205,6 @@ def shopping_item_button_text(item: ShoppingItem) -> str:
     return f"{icons[item.status]} {item.name} — {format_shopping_amount(item.amount, item.unit)}"
 
 
-def normalize_product_name(name: str) -> str:
-    value = name.strip().lower().replace("ё", "е")
-    value = re.sub(r"[^а-яa-z0-9\s-]", "", value)
-    value = " ".join(value.split())
-    if value.endswith("ки"):
-        value = value[:-2] + "ка"
-    elif value.endswith("ки "):
-        value = value[:-3] + "ка"
-    return value
-
-
 def _find_by_simple_form(items_by_name: dict[str, list[ShoppingItem]], key: str) -> list[ShoppingItem]:
     variants = {key}
     if key.endswith("а"):
@@ -225,6 +219,7 @@ def _find_by_simple_form(items_by_name: dict[str, list[ShoppingItem]], key: str)
 
 
 def _format_number(value: float) -> str:
+    value = round(value, 2)
     if value.is_integer():
         return str(int(value))
-    return f"{value:g}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
