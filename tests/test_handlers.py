@@ -6,6 +6,7 @@ from aiogram.filters import CommandObject
 
 from app.database import Database
 from app.handlers import setup_routers
+from app.handlers.backups import chat_id_command
 from app.handlers.menu import development_stub
 from app.handlers.recipes import (
     RECIPE_NAME_INPUT_ERROR,
@@ -31,9 +32,21 @@ class FakeUser:
         return self.first_name
 
 
+@dataclass
+class FakeChat:
+    id: int
+
+
 class FakeMessage:
-    def __init__(self, user_id: int, name: str, text: str) -> None:
+    def __init__(
+        self,
+        user_id: int,
+        name: str,
+        text: str,
+        chat_id: int | None = None,
+    ) -> None:
         self.from_user = FakeUser(id=user_id, first_name=name)
+        self.chat = FakeChat(id=chat_id if chat_id is not None else user_id)
         self.text = text
         self.answers: list[str] = []
         self.reply_markups = []
@@ -77,6 +90,7 @@ def test_all_routers_are_registered():
         "weekly_menu",
         "shopping",
         "menu",
+        "backups",
         "errors",
     ]
 
@@ -159,6 +173,28 @@ async def test_help_command_for_registered_user(db):
     assert "🛒 <b>Покупки</b>" in message.answers[0]
     assert "👨‍👩‍👧 <b>Семья</b>" in message.answers[0]
     assert message.reply_markups[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_chat_id_command_answers_for_owner(db):
+    await db.create_owner_if_first(telegram_id=1, name="Анна")
+    message = FakeMessage(user_id=1, name="Анна", text="/chatid", chat_id=-100)
+
+    await chat_id_command(message, db)
+
+    assert message.answers == ["ID текущего чата: <code>-100</code>"]
+
+
+@pytest.mark.asyncio
+async def test_chat_id_command_rejects_member(db):
+    owner = await db.create_owner_if_first(telegram_id=1, name="Анна")
+    invitation = await db.create_invitation(owner.id)
+    await db.consume_invitation(invitation.code, telegram_id=2, name="Борис")
+    message = FakeMessage(user_id=2, name="Борис", text="/chatid", chat_id=-100)
+
+    await chat_id_command(message, db)
+
+    assert message.answers == [ACCESS_DENIED_TEXT]
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ BOT_USERNAME = "Family_Menuu_Bot"
 class Config:
     bot_token: str
     database_path: Path
+    backup_chat_id: int | None
     bot_username: str = BOT_USERNAME
 
 
@@ -23,9 +24,21 @@ def load_config() -> Config:
     if not _looks_like_bot_token(token):
         raise RuntimeError("BOT_TOKEN не найден или имеет неверный формат в .env")
 
-    return Config(bot_token=token, database_path=DEFAULT_DATABASE_PATH)
+    backup_chat_id = _optional_int(os.getenv("BACKUP_CHAT_ID", "").strip())
+
+    return Config(
+        bot_token=token,
+        database_path=DEFAULT_DATABASE_PATH,
+        backup_chat_id=backup_chat_id,
+    )
 
 
 def _looks_like_bot_token(token: str) -> bool:
     left, sep, right = token.partition(":")
     return bool(sep and left.isdigit() and right)
+
+
+def _optional_int(value: str) -> int | None:
+    if not value:
+        return None
+    return int(value)
