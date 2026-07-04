@@ -27,13 +27,14 @@ async def test_categories_are_seeded(db):
 
     assert [category.name for category in categories] == [
         "🍲 Супы",
-        "🍖 Основные блюда",
+        "🥩 Мясо",
+        "🍽️ Полноценные блюда",
         "🥗 Салаты и закуски",
         "🍰 Выпечка и десерты",
         "🥤 Напитки",
         "📦 Прочее",
     ]
-    assert [category.recipes_count for category in categories] == [0, 0, 0, 0, 0, 0]
+    assert [category.recipes_count for category in categories] == [0, 0, 0, 0, 0, 0, 0]
 
 
 @pytest.mark.asyncio
@@ -197,6 +198,68 @@ async def test_init_schema_migrates_existing_recipes_without_data_loss(tmp_path)
     assert [(item.name, item.amount, item.unit) for item in recipe.ingredients] == [
         ("картошка", 3, "шт")
     ]
+
+
+@pytest.mark.asyncio
+async def test_init_schema_replaces_old_main_dishes_category(tmp_path):
+    db_path = tmp_path / "old-category.db"
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('owner', 'member')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE recipes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                category_id INTEGER NOT NULL,
+                steps TEXT NOT NULL DEFAULT '',
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                photo_file_id TEXT,
+                servings INTEGER NOT NULL DEFAULT 4 CHECK (servings > 0),
+                FOREIGN KEY (category_id) REFERENCES categories(id),
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            );
+            CREATE TABLE recipe_ingredients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipe_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                amount REAL,
+                unit TEXT NOT NULL,
+                FOREIGN KEY (recipe_id) REFERENCES recipes(id) ON DELETE CASCADE
+            );
+            INSERT INTO users (telegram_id, name, role) VALUES (1, 'Анна', 'owner');
+            INSERT INTO categories (name) VALUES ('🍖 Основные блюда');
+            INSERT INTO recipes (name, category_id, steps, created_by)
+            VALUES ('Курица с рисом', 1, 'Запечь.', 1);
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    database = Database(db_path)
+    await database.connect()
+    try:
+        await database.init_schema()
+        categories = await database.list_categories_with_counts()
+        recipe = await database.get_recipe(1)
+    finally:
+        await database.close()
+
+    assert "🍖 Основные блюда" not in [category.name for category in categories]
+    assert "🥩 Мясо" in [category.name for category in categories]
+    assert recipe.category_name == "🍽️ Полноценные блюда"
 
 
 @pytest.mark.asyncio

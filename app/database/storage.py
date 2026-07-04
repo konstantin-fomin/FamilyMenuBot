@@ -108,7 +108,8 @@ class ShoppingDepartment:
 
 DEFAULT_CATEGORIES = (
     "🍲 Супы",
-    "🍖 Основные блюда",
+    "🥩 Мясо",
+    "🍽️ Полноценные блюда",
     "🥗 Салаты и закуски",
     "🍰 Выпечка и десерты",
     "🥤 Напитки",
@@ -268,6 +269,7 @@ class Database:
         )
         self._ensure_recipe_columns()
         self._ensure_menu_item_servings_column()
+        self._replace_category("🍖 Основные блюда", "🍽️ Полноценные блюда")
         self._seed_categories()
         self._seed_shopping_departments()
         db.commit()
@@ -978,6 +980,31 @@ class Database:
             "INSERT OR IGNORE INTO categories (name) VALUES (?)",
             [(name,) for name in DEFAULT_CATEGORIES],
         )
+
+    def _replace_category(self, old_name: str, new_name: str) -> None:
+        old_category = self._fetchone(
+            "SELECT id FROM categories WHERE name = ?",
+            (old_name,),
+        )
+        if old_category is None:
+            return
+
+        new_category = self._fetchone(
+            "SELECT id FROM categories WHERE name = ?",
+            (new_name,),
+        )
+        if new_category is None:
+            self._db.execute(
+                "UPDATE categories SET name = ? WHERE id = ?",
+                (new_name, old_category["id"]),
+            )
+            return
+
+        self._db.execute(
+            "UPDATE recipes SET category_id = ? WHERE category_id = ?",
+            (new_category["id"], old_category["id"]),
+        )
+        self._db.execute("DELETE FROM categories WHERE id = ?", (old_category["id"],))
 
     def _seed_shopping_departments(self) -> None:
         self._db.executemany(
